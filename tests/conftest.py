@@ -111,5 +111,18 @@ def encrypted_pdf(pdf_dir: Path, text_pdf: Path) -> Path:
 @pytest.fixture(scope="session")
 def not_a_pdf(pdf_dir: Path) -> Path:
     path = pdf_dir / "fake.pdf"
-    path.write_text("this is not a pdf")
+    path.write_text("this is not a pdf", encoding="utf-8")
+    return path
+
+
+@pytest.fixture(scope="session")
+def unicode_pdf(pdf_dir: Path) -> Path:
+    """One page with non-ASCII text, to verify CLI output is UTF-8 regardless of
+    the console code page. (Characters stay within cp1252, which is all the
+    standard PDF fonts can encode.)"""
+    path = pdf_dir / "unicode.pdf"
+    c = rl_canvas.Canvas(str(path), pagesize=letter)
+    c.drawString(72, 720, "Café — Über naïve résumé")
+    c.showPage()
+    c.save()
     return path

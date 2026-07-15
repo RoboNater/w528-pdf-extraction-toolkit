@@ -66,6 +66,20 @@ def test_password_flag(encrypted_pdf):
     assert "Chapter One" in json.loads(result.stdout)[0]["text"]
 
 
+def test_unicode_output_is_utf8(unicode_pdf):
+    # run_cli decodes stdout strictly as UTF-8, so this fails if the CLI writes
+    # console-code-page bytes (the Windows default for piped output)
+    result = run_cli("text", unicode_pdf, "--pages", "1", "--plain")
+    assert result.returncode == 0
+    assert "Café — Über naïve résumé" in result.stdout
+
+
+def test_unicode_json_output(unicode_pdf):
+    result = run_cli("text", unicode_pdf, "--pages", "1")
+    assert result.returncode == 0
+    assert "Café" in json.loads(result.stdout)[0]["text"]
+
+
 def test_error_is_structured(tmp_path):
     result = run_cli("index", tmp_path / "missing.pdf")
     assert result.returncode == 1

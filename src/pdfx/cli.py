@@ -22,6 +22,12 @@ from pdfx.pages import PageSpecError
 
 app = typer.Typer(no_args_is_help=True, add_completion=False)
 
+# On Windows, redirected/piped output defaults to the legacy code page (e.g. cp1252),
+# which cannot encode arbitrary extracted PDF text. Force UTF-8 on both streams.
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(encoding="utf-8")
+
 FileArg = Annotated[Path, typer.Argument(help="Path to the PDF file")]
 PagesOpt = Annotated[str, typer.Option("--pages", help="Pages: 'all', '5', '3-7', '1,3-5,9'")]
 PasswordOpt = Annotated[
