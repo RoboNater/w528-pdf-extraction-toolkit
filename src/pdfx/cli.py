@@ -1,0 +1,143 @@
+"""Typer CLI wrapping pdfx.core. Parses args, calls core, serializes output.
+
+Conventions:
+- JSON to stdout by default; --plain/--csv for human/file variants.
+- Errors: exit code 1, message to stderr, structured {"error": ...} on stdout.
+"""
+
+from __future__ import annotations
+
+import csv
+import json
+import sys
+from contextlib import contextmanager
+from pathlib import Path
+from typing import Annotated, Optional
+
+import typer
+from pydantic import BaseModel
+
+from pdfx import core
+from pdfx.pages import PageSpecError
+
+app = typer.Typer(no_args_is_help=True, add_completion=False)
+
+FileArg = Annotated[Path, typer.Argument(help="Path to the PDF file")]
+PagesOpt = Annotated[str, typer.Option("--pages", help="Pages: 'all', '5', '3-7', '1,3-5,9'")]
+PasswordOpt = Annotated[
+    Optional[str], typer.Option("--password", help="Password for encrypted PDFs")
+]
+
+
+@contextmanager
+def _errors():
+    try:
+        yield
+    except (core.PdfxError, PageSpecError, FileNotFoundError) as exc:
+        print(json.dumps({"error": str(exc)}))
+        print(str(exc), file=sys.stderr)
+        raise typer.Exit(1) from exc
+
+
+def _dump(result: BaseModel | list[BaseModel] | dict) -> None:
+    if isinstance(result, BaseModel):
+        data = result.model_dump(mode="json")
+    elif isinstance(result, list):
+        data = [item.model_dump(mode="json") for item in result]
+    else:
+        data = result
+    print(json.dumps(data, indent=2, ensure_ascii=False))
+
+
+@app.command()
+def index(file: FileArg, password: PasswordOpt = None) -> None:
+    """Document index (metadata, outline, page summaries) as JSON."""
+    with _errors():
+        _dump(core.get_index(file, password=password))
+
+
+@app.command()
+def text(
+    file: FileArg,
+    pages: PagesOpt = "all",
+    layout: Annotated[
+        bool, typer.Option("--layout", help="Layout-aware extraction (pdfplumber)")
+    ] = False,
+    plain: Annotated[bool, typer.Option("--plain", help="Raw text instead of JSON")] = False,
+    password: PasswordOpt = None,
+) -> None:
+    """Extract text; JSON by default, --plain for raw text."""
+    with _errors():
+        result = core.get_text(file, pages, layout=layout, password=password)
+        if plain:
+            print("\n\n".join(page.text for page in result))
+        else:
+            _dump(result)
+
+
+@app.command()
+def tables(
+    file: FileArg,
+    pages: PagesOpt = "all",
+    csv_dir: Annotated[
+        Optional[Path], typer.Option("--csv", help="Write one CSV per table to this directory")
+    ] = None,
+    password: PasswordOpt = None,
+) -> None:
+    """Extract tables as JSON, or one CSV file per table with --csv."""
+    with _errors():
+        result = core.get_tables(file, pages, password=password)
+        if csv_dir is None:
+            _dump(result)
+            return
+        csv_dir.mkdir(parents=True, exist_ok=True)
+        written: list[str] = []
+        for table in result:
+            target = csv_dir / f"table_page{table.page:04d}_{table.index:02d}.csv"
+            with open(target, "w", newline="", encoding="utf-8") as f:
+                writer = csv.writer(f)
+                for row in table.rows:
+                    writer.writerow(["" if cell is None else cell for cell in row])
+            written.append(str(target))
+        _dump({"written": written})
+
+
+@app.command()
+def images(
+    file: FileArg,
+    pages: PagesOpt = "all",
+    out: Annotated[
+        Optional[Path],
+        typer.Option("--out", help="Save images to this directory (metadata only if omitted)"),
+    ] = None,
+    password: PasswordOpt = None,
+) -> None:
+    """Extract embedded images."""
+    with _errors():
+        _dump(core.get_images(file, pages, out_dir=out, password=password))
+
+
+@app.command()
+def render(
+    file: FileArg,
+    out: Annotated[Path, typer.Option("--out", help="Output directory for rendered images")],
+    pages: PagesOpt = "all",
+    dpi: Annotated[int, typer.Option("--dpi", help="Render resolution")] = 200,
+    fmt: Annotated[str, typer.Option("--format", help="Image format: png or jpeg")] = "png",
+    password: PasswordOpt = None,
+    poppler_path: Annotated[
+        Optional[Path],
+        typer.Option("--poppler-path", help="Poppler bin directory if not on PATH"),
+    ] = None,
+) -> None:
+    """Rasterize pages to image files."""
+    with _errors():
+        _dump(
+            core.render_pages(
+                file, pages, out, dpi=dpi, fmt=fmt, password=password, poppler_path=poppler_path
+            )
+        )
+
+
+if __name__ == "__main__":
+    app()
