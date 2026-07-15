@@ -8,6 +8,8 @@ Permissive dependencies only (`pypdf`, `pdfplumber`, `pdf2image`, `typer`, `pyda
 no PyMuPDF/AGPL. The core library is CLI-free so a future MCP server can import it
 directly.
 
+See [docs/usage.md](docs/usage.md) for the full usage guide with examples.
+
 ## Setup
 
 Managed with [uv](https://docs.astral.sh/uv/):
