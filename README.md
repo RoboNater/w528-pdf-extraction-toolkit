@@ -29,7 +29,10 @@ If poppler is not on `PATH`, point `PDFX_POPPLER_PATH` (or `--poppler-path`) at 
 
 ## CLI
 
-All page numbers are 1-based. `--pages` accepts `all`, `5`, `3-7`, or `1,3-5,9`.
+`--pages` accepts `all`, `5`, `3-7`, or `1,3-5,9`. When the PDF defines page labels
+(ebook-style `cover`, `i`-`xx`, restarting at `1` for content), specs are interpreted
+against those labels — matching what PDF readers display; pass `--physical` for
+plain 1-based physical numbering.
 Output is JSON on stdout by default; errors exit nonzero with `{"error": ...}` on
 stdout and a message on stderr. Encrypted PDFs take `--password`.
 

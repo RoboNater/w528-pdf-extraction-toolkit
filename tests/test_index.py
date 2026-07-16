@@ -37,3 +37,24 @@ def test_blank_page_has_no_text(blank_pdf):
 def test_no_outline(blank_pdf):
     index = core.get_index(blank_pdf)
     assert index.outline == []
+
+
+def test_page_labels_in_index(labeled_pdf):
+    from conftest import LABELED_PDF_LABELS
+
+    index = core.get_index(labeled_pdf)
+    assert index.has_page_labels is True
+    assert [p.label for p in index.pages] == LABELED_PDF_LABELS
+
+
+def test_unlabeled_pdf_has_no_labels(text_pdf):
+    index = core.get_index(text_pdf)
+    assert index.has_page_labels is False
+    assert all(p.label is None for p in index.pages)
+
+
+def test_get_page_labels(labeled_pdf, text_pdf):
+    from conftest import LABELED_PDF_LABELS
+
+    assert core.get_page_labels(labeled_pdf) == LABELED_PDF_LABELS
+    assert core.get_page_labels(text_pdf) is None

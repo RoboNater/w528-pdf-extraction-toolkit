@@ -24,7 +24,7 @@ from pdfx.models import (
     RenderedPage,
     Table,
 )
-from pdfx.pages import PageSpec, parse_pages
+from pdfx.pages import PageSpec, parse_page_labels, parse_pages
 
 POPPLER_HINT = (
     "poppler is required for page rendering. Install it with "
@@ -66,6 +66,31 @@ def _open_reader(path: Path, password: str | None) -> PdfReader:
     return reader
 
 
+def get_page_labels(path: Path, password: str | None = None) -> list[str] | None:
+    """The document's page labels (one per physical page), or None if the PDF
+    does not define a /PageLabels table."""
+    return _page_labels(_open_reader(path, password))
+
+
+def _page_labels(reader: PdfReader) -> list[str] | None:
+    try:
+        if "/PageLabels" not in reader.trailer["/Root"]:
+            return None
+        return list(reader.page_labels)
+    except Exception:  # malformed catalog/labels tree: treat as unlabeled
+        return None
+
+
+def _resolve_pages(reader: PdfReader, pages: PageSpec, physical: bool) -> list[int]:
+    """Page spec -> physical page numbers. Uses the PDF's page labels when they
+    exist unless physical=True."""
+    if not physical:
+        labels = _page_labels(reader)
+        if labels is not None:
+            return parse_page_labels(pages, labels)
+    return parse_pages(pages, len(reader.pages))
+
+
 def get_index(path: Path, password: str | None = None) -> DocumentIndex:
     """Document metadata, outline/bookmark tree, and per-page summary."""
     reader = _open_reader(path, password)
@@ -81,9 +106,11 @@ def get_index(path: Path, password: str | None = None) -> DocumentIndex:
             creation_date=_safe_date(meta, "creation_date"),
             modification_date=_safe_date(meta, "modification_date"),
         )
+    labels = _page_labels(reader)
     pages = [
         PageSummary(
             page=i,
+            label=labels[i - 1] if labels else None,
             width=float(page.mediabox.width),
             height=float(page.mediabox.height),
             rotation=page.rotation or 0,
@@ -94,6 +121,7 @@ def get_index(path: Path, password: str | None = None) -> DocumentIndex:
     return DocumentIndex(
         path=str(path),
         page_count=len(reader.pages),
+        has_page_labels=labels is not None,
         metadata=metadata,
         outline=_convert_outline(reader, reader.outline),
         pages=pages,
@@ -105,10 +133,11 @@ def get_text(
     pages: PageSpec = "all",
     layout: bool = False,
     password: str | None = None,
+    physical: bool = False,
 ) -> list[PageText]:
     """Extract text per page. layout=True uses pdfplumber's layout-aware extraction."""
     reader = _open_reader(path, password)
-    numbers = parse_pages(pages, len(reader.pages))
+    numbers = _resolve_pages(reader, pages, physical)
     results: list[PageText] = []
     if layout:
         with pdfplumber.open(path, password=password) as pdf:
@@ -126,10 +155,11 @@ def get_tables(
     path: Path,
     pages: PageSpec = "all",
     password: str | None = None,
+    physical: bool = False,
 ) -> list[Table]:
     """Extract tables via pdfplumber. rows is a list of rows of cell strings (or None)."""
     reader = _open_reader(path, password)
-    numbers = parse_pages(pages, len(reader.pages))
+    numbers = _resolve_pages(reader, pages, physical)
     results: list[Table] = []
     with pdfplumber.open(path, password=password) as pdf:
         for n in numbers:
@@ -143,10 +173,11 @@ def get_images(
     pages: PageSpec = "all",
     out_dir: Path | None = None,
     password: str | None = None,
+    physical: bool = False,
 ) -> list[ImageInfo]:
     """Embedded images. Saves files to out_dir if given, otherwise metadata only."""
     reader = _open_reader(path, password)
-    numbers = parse_pages(pages, len(reader.pages))
+    numbers = _resolve_pages(reader, pages, physical)
     results: list[ImageInfo] = []
     if out_dir is not None:
         out_dir = Path(out_dir)
@@ -183,6 +214,7 @@ def render_pages(
     fmt: str = "png",
     password: str | None = None,
     poppler_path: str | Path | None = None,
+    physical: bool = False,
 ) -> list[RenderedPage]:
     """Rasterize pages to image files named page_NNNN.<ext> in out_dir.
 
@@ -193,7 +225,7 @@ def render_pages(
     from pdf2image.exceptions import PDFInfoNotInstalledError
 
     reader = _open_reader(path, password)
-    numbers = parse_pages(pages, len(reader.pages))
+    numbers = _resolve_pages(reader, pages, physical)
     fmt = fmt.lower()
     if fmt == "jpg":
         fmt = "jpeg"

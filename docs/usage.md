@@ -6,7 +6,6 @@ The same functionality is available as a Python library (`pdfx.core`).
 
 ## Conventions
 
-- **Page numbers are 1-based** everywhere (CLI and library).
 - **`--pages`** accepts:
 
   | Spec        | Meaning                          |
@@ -15,6 +14,10 @@ The same functionality is available as a Python library (`pdfx.core`).
   | `5`         | page 5                           |
   | `3-7`       | pages 3 through 7, inclusive     |
   | `1,3-5,9`   | mixed list; deduplicated, sorted |
+
+- **Page numbering follows the document's page labels when it has them** (see
+  [Page labels](#page-labels) below); otherwise pages are numbered 1-based from
+  the first physical page. `--physical` forces 1-based physical numbering either way.
 
 - **Errors** exit with code 1, print a human-readable message to stderr, and print
   `{"error": "..."}` to stdout so scripted callers always get parseable JSON.
@@ -49,6 +52,8 @@ a per-page summary:
 ```
 
 `has_text: false` usually means a scanned/image-only page (OCR is out of scope for v1).
+When the document defines page labels, `has_page_labels` is `true` and each page
+summary includes its `label` — handy for seeing how labels map to physical positions.
 
 ### `pdfx text` — extract text
 
@@ -91,6 +96,35 @@ uv run pdfx render report.pdf --pages 1-3 --out renders/ --dpi 200 --format png
 
 Writes `page_NNNN.png` (or `.jpg` with `--format jpeg`) into `--out` and reports the
 pixel dimensions of each file. Requires poppler (see below).
+
+## Page labels
+
+Books and reports often number their pages the way print does: a cover, front
+matter like `FM1`-`FM6` or `i`-`xx`, then content starting over at `1`. PDFs encode
+this as *page labels* (`/PageLabels`), and PDF readers display them — the "page 1"
+your reader shows is usually not the first physical page.
+
+pdfx follows the same convention: **when a document defines page labels, `--pages`
+is interpreted against them** and a notice is printed to stderr:
+
+```sh
+uv run pdfx text book.pdf --pages 1-30      # content pages labeled 1-30
+uv run pdfx text book.pdf --pages i-xx      # roman-numeral front matter
+uv run pdfx text book.pdf --pages cover,FM2 # any label works, mixed freely
+```
+
+Notes:
+
+- Ranges may span labeling schemes (`FM3-ii`) and cover the physical span between
+  their endpoints. Matching is exact first, then case-insensitive.
+- Pass `--physical` (library: `physical=True`) to force plain 1-based physical
+  numbering.
+- Documents without page labels behave exactly as before; `--physical` is then a
+  no-op.
+- `pdfx index` shows every page's label alongside its physical number, and
+  `core.get_page_labels(path)` returns the full label list (or `None`).
+- JSON results always report **physical** page numbers in the `page` field, so
+  output is unambiguous regardless of how pages were selected.
 
 ## Library
 

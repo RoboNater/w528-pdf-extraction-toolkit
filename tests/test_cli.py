@@ -66,6 +66,41 @@ def test_password_flag(encrypted_pdf):
     assert "Chapter One" in json.loads(result.stdout)[0]["text"]
 
 
+def test_labels_default_with_notice(labeled_pdf):
+    result = run_cli("text", labeled_pdf, "--pages", "1", "--plain")
+    assert result.returncode == 0
+    assert "Physical page 8" in result.stdout
+    assert "page labels" in result.stderr
+
+
+def test_physical_flag(labeled_pdf):
+    result = run_cli("text", labeled_pdf, "--pages", "1", "--plain", "--physical")
+    assert result.returncode == 0
+    assert "Physical page 1" in result.stdout
+    assert result.stderr.strip() == ""
+
+
+def test_no_notice_for_unlabeled_pdf(text_pdf):
+    result = run_cli("text", text_pdf, "--pages", "1")
+    assert result.returncode == 0
+    assert result.stderr.strip() == ""
+
+
+def test_unknown_label_error(labeled_pdf):
+    result = run_cli("text", labeled_pdf, "--pages", "42")
+    assert result.returncode == 1
+    assert "No page labeled" in json.loads(result.stdout)["error"]
+
+
+def test_index_shows_labels(labeled_pdf):
+    result = run_cli("index", labeled_pdf)
+    assert result.returncode == 0
+    data = json.loads(result.stdout)
+    assert data["has_page_labels"] is True
+    assert data["pages"][0]["label"] == "cover"
+    assert data["pages"][7]["label"] == "1"
+
+
 def test_unicode_output_is_utf8(unicode_pdf):
     # run_cli decodes stdout strictly as UTF-8, so this fails if the CLI writes
     # console-code-page bytes (the Windows default for piped output)

@@ -108,6 +108,30 @@ def encrypted_pdf(pdf_dir: Path, text_pdf: Path) -> Path:
     return path
 
 
+LABELED_PDF_LABELS = ["cover", "FM1", "FM2", "FM3", "i", "ii", "iii", "1", "2", "3"]
+
+
+@pytest.fixture(scope="session")
+def labeled_pdf(pdf_dir: Path) -> Path:
+    """Ten text pages with ebook-style page labels: cover, FM1-FM3, i-iii, 1-3.
+    Each physical page N contains the text 'Physical page N'."""
+    source = pdf_dir / "labeled_source.pdf"
+    c = rl_canvas.Canvas(str(source), pagesize=letter)
+    for n in range(1, 11):
+        c.drawString(72, 720, f"Physical page {n}")
+        c.showPage()
+    c.save()
+    writer = PdfWriter(clone_from=str(source))
+    writer.set_page_label(0, 0, prefix="cover")
+    writer.set_page_label(1, 3, prefix="FM", style="/D")
+    writer.set_page_label(4, 6, style="/r")
+    writer.set_page_label(7, 9, style="/D")
+    path = pdf_dir / "labeled.pdf"
+    with open(path, "wb") as f:
+        writer.write(f)
+    return path
+
+
 @pytest.fixture(scope="session")
 def not_a_pdf(pdf_dir: Path) -> Path:
     path = pdf_dir / "fake.pdf"

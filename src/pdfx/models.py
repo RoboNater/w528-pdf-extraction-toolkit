@@ -26,6 +26,7 @@ class OutlineItem(BaseModel):
 
 class PageSummary(BaseModel):
     page: int
+    label: str | None = None  # display label from the PDF's /PageLabels, if any
     width: float
     height: float
     rotation: int
@@ -35,6 +36,7 @@ class PageSummary(BaseModel):
 class DocumentIndex(BaseModel):
     path: str
     page_count: int
+    has_page_labels: bool = False
     metadata: DocumentMetadata
     outline: list[OutlineItem]
     pages: list[PageSummary]
