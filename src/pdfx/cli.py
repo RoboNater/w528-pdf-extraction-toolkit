@@ -134,6 +134,57 @@ def tables(
 
 
 @app.command()
+def search(
+    file: FileArg,
+    query: Annotated[str, typer.Argument(help="Phrase (or regex with --regex) to search for")],
+    pages: PagesOpt = "all",
+    regex: Annotated[
+        bool, typer.Option("--regex", help="Treat QUERY as a regular expression")
+    ] = False,
+    case_sensitive: Annotated[
+        bool, typer.Option("--case-sensitive", help="Match case exactly")
+    ] = False,
+    context: Annotated[
+        int, typer.Option("--context", help="Context characters around each match")
+    ] = 80,
+    max_hits: Annotated[int, typer.Option("--max", help="Maximum number of hits")] = 100,
+    plain: Annotated[
+        bool, typer.Option("--plain", help="One human-readable line per hit instead of JSON")
+    ] = False,
+    password: PasswordOpt = None,
+    physical: PhysicalOpt = False,
+) -> None:
+    """Search page text; hits report both physical and labeled page numbers."""
+    with _errors():
+        _announce_labels(file, pages, physical, password)
+        result = core.search(
+            file,
+            query,
+            pages,
+            regex=regex,
+            ignore_case=not case_sensitive,
+            context=context,
+            max_hits=max_hits,
+            password=password,
+            physical=physical,
+        )
+        if plain:
+            for hit in result:
+                if hit.labeled_page is not None:
+                    where = f"page {hit.labeled_page} (pp {hit.physical_page})"
+                else:
+                    where = f"page {hit.physical_page}"
+                print(f"{where}: …{hit.before}[{hit.match}]{hit.after}…")
+        else:
+            _dump(result)
+        if len(result) >= max_hits:
+            print(
+                f"Results capped at {max_hits}; pass --max to raise the limit.",
+                file=sys.stderr,
+            )
+
+
+@app.command()
 def images(
     file: FileArg,
     pages: PagesOpt = "all",
