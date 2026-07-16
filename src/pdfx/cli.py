@@ -33,6 +33,26 @@ PagesOpt = Annotated[str, typer.Option("--pages", help="Pages: 'all', '5', '3-7'
 PasswordOpt = Annotated[
     Optional[str], typer.Option("--password", help="Password for encrypted PDFs")
 ]
+PhysicalOpt = Annotated[
+    bool,
+    typer.Option(
+        "--physical",
+        help="Interpret --pages as physical positions (first page = 1), "
+        "ignoring the PDF's page labels",
+    ),
+]
+
+
+def _announce_labels(file: Path, pages: str, physical: bool, password: Optional[str]) -> None:
+    """Tell the user (on stderr) when --pages is interpreted via page labels."""
+    if physical or pages.strip().lower() == "all":
+        return
+    if core.get_page_labels(file, password=password) is not None:
+        print(
+            "Interpreting --pages using the PDF's page labels; "
+            "pass --physical for 1-based physical page numbers.",
+            file=sys.stderr,
+        )
 
 
 @contextmanager
@@ -71,10 +91,12 @@ def text(
     ] = False,
     plain: Annotated[bool, typer.Option("--plain", help="Raw text instead of JSON")] = False,
     password: PasswordOpt = None,
+    physical: PhysicalOpt = False,
 ) -> None:
     """Extract text; JSON by default, --plain for raw text."""
     with _errors():
-        result = core.get_text(file, pages, layout=layout, password=password)
+        _announce_labels(file, pages, physical, password)
+        result = core.get_text(file, pages, layout=layout, password=password, physical=physical)
         if plain:
             print("\n\n".join(page.text for page in result))
         else:
@@ -89,17 +111,20 @@ def tables(
         Optional[Path], typer.Option("--csv", help="Write one CSV per table to this directory")
     ] = None,
     password: PasswordOpt = None,
+    physical: PhysicalOpt = False,
 ) -> None:
     """Extract tables as JSON, or one CSV file per table with --csv."""
     with _errors():
-        result = core.get_tables(file, pages, password=password)
+        _announce_labels(file, pages, physical, password)
+        result = core.get_tables(file, pages, password=password, physical=physical)
         if csv_dir is None:
             _dump(result)
             return
         csv_dir.mkdir(parents=True, exist_ok=True)
         written: list[str] = []
         for table in result:
-            target = csv_dir / f"table_page{table.page:04d}_{table.index:02d}.csv"
+            stem = core.page_stem(table.physical_page, table.labeled_page)
+            target = csv_dir / f"table_{stem}_{table.index:02d}.csv"
             with open(target, "w", newline="", encoding="utf-8") as f:
                 writer = csv.writer(f)
                 for row in table.rows:
@@ -117,10 +142,12 @@ def images(
         typer.Option("--out", help="Save images to this directory (metadata only if omitted)"),
     ] = None,
     password: PasswordOpt = None,
+    physical: PhysicalOpt = False,
 ) -> None:
     """Extract embedded images."""
     with _errors():
-        _dump(core.get_images(file, pages, out_dir=out, password=password))
+        _announce_labels(file, pages, physical, password)
+        _dump(core.get_images(file, pages, out_dir=out, password=password, physical=physical))
 
 
 @app.command()
@@ -135,12 +162,21 @@ def render(
         Optional[Path],
         typer.Option("--poppler-path", help="Poppler bin directory if not on PATH"),
     ] = None,
+    physical: PhysicalOpt = False,
 ) -> None:
     """Rasterize pages to image files."""
     with _errors():
+        _announce_labels(file, pages, physical, password)
         _dump(
             core.render_pages(
-                file, pages, out, dpi=dpi, fmt=fmt, password=password, poppler_path=poppler_path
+                file,
+                pages,
+                out,
+                dpi=dpi,
+                fmt=fmt,
+                password=password,
+                poppler_path=poppler_path,
+                physical=physical,
             )
         )
 
