@@ -123,7 +123,8 @@ def tables(
         csv_dir.mkdir(parents=True, exist_ok=True)
         written: list[str] = []
         for table in result:
-            target = csv_dir / f"table_page{table.page:04d}_{table.index:02d}.csv"
+            stem = core.page_stem(table.physical_page, table.labeled_page)
+            target = csv_dir / f"table_{stem}_{table.index:02d}.csv"
             with open(target, "w", newline="", encoding="utf-8") as f:
                 writer = csv.writer(f)
                 for row in table.rows:

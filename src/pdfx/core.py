@@ -7,6 +7,7 @@ Page numbers are 1-based throughout the public API.
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 
 import pdfplumber
@@ -81,14 +82,32 @@ def _page_labels(reader: PdfReader) -> list[str] | None:
         return None
 
 
-def _resolve_pages(reader: PdfReader, pages: PageSpec, physical: bool) -> list[int]:
-    """Page spec -> physical page numbers. Uses the PDF's page labels when they
-    exist unless physical=True."""
-    if not physical:
-        labels = _page_labels(reader)
-        if labels is not None:
-            return parse_page_labels(pages, labels)
-    return parse_pages(pages, len(reader.pages))
+def _resolve_pages(
+    reader: PdfReader, pages: PageSpec, physical: bool
+) -> tuple[list[int], list[str] | None]:
+    """Page spec -> (physical page numbers, page labels). The spec is matched
+    against the PDF's page labels when they exist unless physical=True; labels
+    are returned either way so results can report both numbering schemes."""
+    labels = _page_labels(reader)
+    if not physical and labels is not None:
+        return parse_page_labels(pages, labels), labels
+    return parse_pages(pages, len(reader.pages)), labels
+
+
+def _label_for(labels: list[str] | None, physical_page: int) -> str | None:
+    return labels[physical_page - 1] if labels else None
+
+
+def page_stem(physical_page: int, labeled_page: str | None = None) -> str:
+    """Base file name for a page's outputs: 'page0007', or when the document has
+    labels 'page0030_pp0007' — label first, since users think in labels."""
+    if labeled_page is None:
+        return f"page{physical_page:04d}"
+    if labeled_page.isdigit():
+        token = f"{int(labeled_page):04d}"
+    else:
+        token = re.sub(r"[^A-Za-z0-9._-]", "_", labeled_page)
+    return f"page{token}_pp{physical_page:04d}"
 
 
 def get_index(path: Path, password: str | None = None) -> DocumentIndex:
@@ -109,8 +128,8 @@ def get_index(path: Path, password: str | None = None) -> DocumentIndex:
     labels = _page_labels(reader)
     pages = [
         PageSummary(
-            page=i,
-            label=labels[i - 1] if labels else None,
+            physical_page=i,
+            labeled_page=_label_for(labels, i),
             width=float(page.mediabox.width),
             height=float(page.mediabox.height),
             rotation=page.rotation or 0,
@@ -123,7 +142,7 @@ def get_index(path: Path, password: str | None = None) -> DocumentIndex:
         page_count=len(reader.pages),
         has_page_labels=labels is not None,
         metadata=metadata,
-        outline=_convert_outline(reader, reader.outline),
+        outline=_convert_outline(reader, reader.outline, labels),
         pages=pages,
     )
 
@@ -137,17 +156,31 @@ def get_text(
 ) -> list[PageText]:
     """Extract text per page. layout=True uses pdfplumber's layout-aware extraction."""
     reader = _open_reader(path, password)
-    numbers = _resolve_pages(reader, pages, physical)
+    numbers, labels = _resolve_pages(reader, pages, physical)
     results: list[PageText] = []
     if layout:
         with pdfplumber.open(path, password=password) as pdf:
             for n in numbers:
                 text = pdf.pages[n - 1].extract_text(layout=True) or ""
-                results.append(PageText(page=n, text=text, has_text=bool(text.strip())))
+                results.append(
+                    PageText(
+                        physical_page=n,
+                        labeled_page=_label_for(labels, n),
+                        text=text,
+                        has_text=bool(text.strip()),
+                    )
+                )
     else:
         for n in numbers:
             text = reader.pages[n - 1].extract_text() or ""
-            results.append(PageText(page=n, text=text, has_text=bool(text.strip())))
+            results.append(
+                PageText(
+                    physical_page=n,
+                    labeled_page=_label_for(labels, n),
+                    text=text,
+                    has_text=bool(text.strip()),
+                )
+            )
     return results
 
 
@@ -159,12 +192,19 @@ def get_tables(
 ) -> list[Table]:
     """Extract tables via pdfplumber. rows is a list of rows of cell strings (or None)."""
     reader = _open_reader(path, password)
-    numbers = _resolve_pages(reader, pages, physical)
+    numbers, labels = _resolve_pages(reader, pages, physical)
     results: list[Table] = []
     with pdfplumber.open(path, password=password) as pdf:
         for n in numbers:
             for i, rows in enumerate(pdf.pages[n - 1].extract_tables()):
-                results.append(Table(page=n, index=i, rows=rows))
+                results.append(
+                    Table(
+                        physical_page=n,
+                        labeled_page=_label_for(labels, n),
+                        index=i,
+                        rows=rows,
+                    )
+                )
     return results
 
 
@@ -177,24 +217,26 @@ def get_images(
 ) -> list[ImageInfo]:
     """Embedded images. Saves files to out_dir if given, otherwise metadata only."""
     reader = _open_reader(path, password)
-    numbers = _resolve_pages(reader, pages, physical)
+    numbers, labels = _resolve_pages(reader, pages, physical)
     results: list[ImageInfo] = []
     if out_dir is not None:
         out_dir = Path(out_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
     for n in numbers:
+        label = _label_for(labels, n)
         for i, image in enumerate(reader.pages[n - 1].images):
             pil = image.image
             width, height = pil.size if pil is not None else (0, 0)
             fmt = pil.format.lower() if pil is not None and pil.format else None
             saved_path = None
             if out_dir is not None:
-                target = out_dir / f"page{n:04d}_img{i:02d}_{Path(image.name).name}"
+                target = out_dir / f"{page_stem(n, label)}_img{i:02d}_{Path(image.name).name}"
                 target.write_bytes(image.data)
                 saved_path = str(target)
             results.append(
                 ImageInfo(
-                    page=n,
+                    physical_page=n,
+                    labeled_page=label,
                     index=i,
                     name=image.name,
                     width=width,
@@ -216,7 +258,8 @@ def render_pages(
     poppler_path: str | Path | None = None,
     physical: bool = False,
 ) -> list[RenderedPage]:
-    """Rasterize pages to image files named page_NNNN.<ext> in out_dir.
+    """Rasterize pages to image files in out_dir, named page_stem(...).<ext>
+    (e.g. page0007.png, or page0030_pp0007.png when the document has labels).
 
     Requires poppler. poppler_path (or the PDFX_POPPLER_PATH environment
     variable) points at poppler's bin directory when it is not on PATH.
@@ -225,7 +268,7 @@ def render_pages(
     from pdf2image.exceptions import PDFInfoNotInstalledError
 
     reader = _open_reader(path, password)
-    numbers = _resolve_pages(reader, pages, physical)
+    numbers, labels = _resolve_pages(reader, pages, physical)
     fmt = fmt.lower()
     if fmt == "jpg":
         fmt = "jpeg"
@@ -248,11 +291,17 @@ def render_pages(
             )
             for offset, image in enumerate(images):
                 n = start + offset
-                target = out_dir / f"page_{n:04d}.{ext}"
+                label = _label_for(labels, n)
+                target = out_dir / f"{page_stem(n, label)}.{ext}"
                 image.save(target)
                 results.append(
                     RenderedPage(
-                        page=n, path=str(target), width=image.width, height=image.height, dpi=dpi
+                        physical_page=n,
+                        labeled_page=label,
+                        path=str(target),
+                        width=image.width,
+                        height=image.height,
+                        dpi=dpi,
                     )
                 )
     except PDFInfoNotInstalledError as exc:
@@ -268,12 +317,14 @@ def _safe_date(meta, attr: str) -> str | None:
     return value.isoformat() if value is not None else None
 
 
-def _convert_outline(reader: PdfReader, items) -> list[OutlineItem]:
+def _convert_outline(
+    reader: PdfReader, items, labels: list[str] | None = None
+) -> list[OutlineItem]:
     """Convert pypdf's outline (Destinations with nested lists) to OutlineItems."""
     result: list[OutlineItem] = []
     for item in items:
         if isinstance(item, list):
-            children = _convert_outline(reader, item)
+            children = _convert_outline(reader, item, labels)
             if result:
                 result[-1].children.extend(children)
             else:
@@ -283,7 +334,13 @@ def _convert_outline(reader: PdfReader, items) -> list[OutlineItem]:
                 page = reader.get_destination_page_number(item) + 1
             except Exception:
                 page = None
-            result.append(OutlineItem(title=str(item.title), page=page))
+            result.append(
+                OutlineItem(
+                    title=str(item.title),
+                    physical_page=page,
+                    labeled_page=_label_for(labels, page) if page else None,
+                )
+            )
     return result
 
 

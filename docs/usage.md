@@ -40,12 +40,17 @@ a per-page summary:
 
 ```json
 {
-  "path": "report.pdf",
-  "page_count": 3,
+  "path": "book.pdf",
+  "page_count": 38,
+  "has_page_labels": true,
   "metadata": { "title": "Quarterly Report", "author": "...", ... },
-  "outline": [ { "title": "Introduction", "page": 1, "children": [] }, ... ],
+  "outline": [
+    { "title": "Chapter 1", "physical_page": 28, "labeled_page": "1", "children": [] },
+    ...
+  ],
   "pages": [
-    { "page": 1, "width": 612.0, "height": 792.0, "rotation": 0, "has_text": true },
+    { "physical_page": 1, "labeled_page": "cover", "width": 612.0, "height": 792.0,
+      "rotation": 0, "has_text": true },
     ...
   ]
 }
@@ -58,7 +63,8 @@ summary includes its `label` — handy for seeing how labels map to physical pos
 ### `pdfx text` — extract text
 
 ```sh
-uv run pdfx text report.pdf --pages 3-7           # JSON: [{page, text, has_text}, ...]
+uv run pdfx text report.pdf --pages 3-7           # JSON: [{physical_page, labeled_page,
+                                                  #         text, has_text}, ...]
 uv run pdfx text report.pdf --pages 1 --plain     # raw text only
 uv run pdfx text report.pdf --pages all --layout  # layout-aware (slower, better columns)
 ```
@@ -70,13 +76,14 @@ or when reading order matters.
 ### `pdfx tables` — extract tables
 
 ```sh
-uv run pdfx tables report.pdf --pages all            # JSON: [{page, index, rows}, ...]
+uv run pdfx tables report.pdf --pages all            # JSON: [{physical_page, labeled_page,
+                                                     #         index, rows}, ...]
 uv run pdfx tables report.pdf --pages 2 --csv out/   # one CSV file per table
 ```
 
 `rows` is a list of rows of cell strings; empty cells are `null` in JSON. With
-`--csv`, files are written as `table_pageNNNN_MM.csv` and the JSON output lists the
-written paths. Detection works best on ruled (lined) tables.
+`--csv`, one file is written per table and the JSON output lists the written paths.
+Detection works best on ruled (lined) tables.
 
 ### `pdfx images` — embedded images
 
@@ -86,7 +93,7 @@ uv run pdfx images report.pdf --pages all --out imgs/ # also save the image file
 ```
 
 Reports name, page, pixel size, and format for each embedded image. With `--out`,
-files are saved as `pageNNNN_imgMM_<name>` and `saved_path` is filled in.
+files are saved and `saved_path` is filled in.
 
 ### `pdfx render` — rasterize pages
 
@@ -94,8 +101,19 @@ files are saved as `pageNNNN_imgMM_<name>` and `saved_path` is filled in.
 uv run pdfx render report.pdf --pages 1-3 --out renders/ --dpi 200 --format png
 ```
 
-Writes `page_NNNN.png` (or `.jpg` with `--format jpeg`) into `--out` and reports the
-pixel dimensions of each file. Requires poppler (see below).
+Writes one image per page into `--out` and reports the pixel dimensions of each
+file. Requires poppler (see below).
+
+### Output file naming
+
+Files produced by `tables --csv`, `images --out`, and `render` are named by page
+label first (what you see in your PDF reader), with the physical position as a
+`pp` suffix for disambiguation; numeric parts are zero-padded to 4 digits:
+
+| Document      | render            | images                    | tables --csv               |
+|---------------|-------------------|---------------------------|----------------------------|
+| with labels   | `page0030_pp0038.png` | `page0030_pp0038_img00_Im1.png` | `table_page0030_pp0038_00.csv` |
+| without labels| `page0038.png`    | `page0038_img00_Im1.png`  | `table_page0038_00.csv`    |
 
 ## Page labels
 
@@ -123,8 +141,10 @@ Notes:
   no-op.
 - `pdfx index` shows every page's label alongside its physical number, and
   `core.get_page_labels(path)` returns the full label list (or `None`).
-- JSON results always report **physical** page numbers in the `page` field, so
-  output is unambiguous regardless of how pages were selected.
+- Every per-page JSON result carries both schemes: `physical_page` (1-based
+  position in the file) and `labeled_page` (the display label, `null` when the
+  document has no labels), so output is unambiguous regardless of how pages
+  were selected.
 
 ## Library
 

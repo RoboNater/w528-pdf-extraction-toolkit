@@ -111,6 +111,27 @@ def encrypted_pdf(pdf_dir: Path, text_pdf: Path) -> Path:
 LABELED_PDF_LABELS = ["cover", "FM1", "FM2", "FM3", "i", "ii", "iii", "1", "2", "3"]
 
 
+def _with_decimal_labels(src: Path, dst: Path, start: int) -> Path:
+    """Copy a PDF, labeling all pages with decimal numbers starting at `start`."""
+    writer = PdfWriter(clone_from=str(src))
+    writer.set_page_label(0, len(writer.pages) - 1, style="/D", start=start)
+    with open(dst, "wb") as f:
+        writer.write(f)
+    return dst
+
+
+@pytest.fixture(scope="session")
+def labeled_image_pdf(pdf_dir: Path, image_pdf: Path) -> Path:
+    """image_pdf with its single page labeled '30'."""
+    return _with_decimal_labels(image_pdf, pdf_dir / "labeled_image.pdf", 30)
+
+
+@pytest.fixture(scope="session")
+def labeled_table_pdf(pdf_dir: Path, table_pdf: Path) -> Path:
+    """table_pdf with its single page labeled '30'."""
+    return _with_decimal_labels(table_pdf, pdf_dir / "labeled_table.pdf", 30)
+
+
 @pytest.fixture(scope="session")
 def labeled_pdf(pdf_dir: Path) -> Path:
     """Ten text pages with ebook-style page labels: cover, FM1-FM3, i-iii, 1-3.

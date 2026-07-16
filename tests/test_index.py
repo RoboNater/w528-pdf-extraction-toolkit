@@ -10,7 +10,7 @@ def test_page_count_and_metadata(text_pdf):
 
 def test_page_summaries(text_pdf):
     index = core.get_index(text_pdf)
-    assert [p.page for p in index.pages] == [1, 2, 3]
+    assert [p.physical_page for p in index.pages] == [1, 2, 3]
     first = index.pages[0]
     assert round(first.width) == 612  # letter size in points
     assert round(first.height) == 792
@@ -22,10 +22,10 @@ def test_outline(text_pdf):
     index = core.get_index(text_pdf)
     titles = [item.title for item in index.outline]
     assert titles == ["Chapter One", "Chapter Two", "Chapter Three"]
-    assert [item.page for item in index.outline] == [1, 2, 3]
+    assert [item.physical_page for item in index.outline] == [1, 2, 3]
     chapter_two = index.outline[1]
     assert [c.title for c in chapter_two.children] == ["Section 2.1"]
-    assert chapter_two.children[0].page == 2
+    assert chapter_two.children[0].physical_page == 2
 
 
 def test_blank_page_has_no_text(blank_pdf):
@@ -44,13 +44,13 @@ def test_page_labels_in_index(labeled_pdf):
 
     index = core.get_index(labeled_pdf)
     assert index.has_page_labels is True
-    assert [p.label for p in index.pages] == LABELED_PDF_LABELS
+    assert [p.labeled_page for p in index.pages] == LABELED_PDF_LABELS
 
 
 def test_unlabeled_pdf_has_no_labels(text_pdf):
     index = core.get_index(text_pdf)
     assert index.has_page_labels is False
-    assert all(p.label is None for p in index.pages)
+    assert all(p.labeled_page is None for p in index.pages)
 
 
 def test_get_page_labels(labeled_pdf, text_pdf):

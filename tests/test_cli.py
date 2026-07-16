@@ -25,7 +25,7 @@ def test_text_json(text_pdf):
     result = run_cli("text", text_pdf, "--pages", "2")
     assert result.returncode == 0
     data = json.loads(result.stdout)
-    assert data[0]["page"] == 2
+    assert data[0]["physical_page"] == 2
     assert "Chapter Two" in data[0]["text"]
 
 
@@ -50,6 +50,15 @@ def test_tables_csv(table_pdf, tmp_path):
     assert len(written) == 1
     content = open(written[0], encoding="utf-8").read()
     assert "Name,Qty,Price" in content
+
+
+def test_tables_csv_labeled_names(labeled_table_pdf, tmp_path):
+    from pathlib import Path
+
+    result = run_cli("tables", labeled_table_pdf, "--csv", tmp_path)
+    assert result.returncode == 0
+    written = json.loads(result.stdout)["written"]
+    assert Path(written[0]).name == "table_page0030_pp0001_00.csv"
 
 
 def test_images_metadata(image_pdf):
@@ -97,8 +106,8 @@ def test_index_shows_labels(labeled_pdf):
     assert result.returncode == 0
     data = json.loads(result.stdout)
     assert data["has_page_labels"] is True
-    assert data["pages"][0]["label"] == "cover"
-    assert data["pages"][7]["label"] == "1"
+    assert data["pages"][0]["labeled_page"] == "cover"
+    assert data["pages"][7]["labeled_page"] == "1"
 
 
 def test_unicode_output_is_utf8(unicode_pdf):
@@ -133,5 +142,5 @@ def test_render(text_pdf, tmp_path):
     result = run_cli("render", text_pdf, "--pages", "1", "--out", tmp_path, "--dpi", "72")
     assert result.returncode == 0
     data = json.loads(result.stdout)
-    assert data[0]["page"] == 1
+    assert data[0]["physical_page"] == 1
     assert data[0]["dpi"] == 72
