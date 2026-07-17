@@ -8,7 +8,10 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
+import subprocess
 from pathlib import Path
+from typing import Literal
 
 import pdfplumber
 from pypdf import PasswordType, PdfReader
@@ -29,11 +32,16 @@ from pdfx.models import (
 from pdfx.pages import PageSpec, parse_page_labels, parse_pages
 
 POPPLER_HINT = (
-    "poppler is required for page rendering. Install it with "
-    "'apt install poppler-utils' (Linux), 'brew install poppler' (macOS), or "
-    "'winget install oschwartz10612.Poppler' (Windows); alternatively set "
-    "PDFX_POPPLER_PATH to poppler's bin directory."
+    "poppler is required for the default text extraction engine and for page "
+    "rendering. Install it with 'apt install poppler-utils' (Linux), "
+    "'brew install poppler' (macOS), or 'winget install oschwartz10612.Poppler' "
+    "(Windows); alternatively set PDFX_POPPLER_PATH to poppler's bin directory. "
+    "For text extraction only, --engine pypdf or --engine pdfplumber (library: "
+    "engine='pypdf') selects a pure-Python extractor instead, which may run "
+    "words together on PDFs that encode word gaps as glyph positioning."
 )
+
+TextEngine = Literal["poppler", "pypdf", "pdfplumber"]
 
 
 class PdfxError(Exception):
@@ -49,7 +57,7 @@ class PasswordError(PdfxError):
 
 
 class PopplerNotFoundError(PdfxError):
-    """poppler binaries are required for rendering but were not found."""
+    """poppler binaries are required (text extraction or rendering) but were not found."""
 
 
 class QueryError(PdfxError):
@@ -152,41 +160,101 @@ def get_index(path: Path, password: str | None = None) -> DocumentIndex:
     )
 
 
+def _find_pdftotext(poppler_path: str | Path | None) -> str:
+    poppler_path = poppler_path or os.environ.get("PDFX_POPPLER_PATH") or None
+    exe = (
+        shutil.which("pdftotext", path=str(poppler_path))
+        if poppler_path
+        else shutil.which("pdftotext")
+    )
+    if exe is None:
+        raise PopplerNotFoundError(POPPLER_HINT)
+    return exe
+
+
+def _pdftotext_pages(
+    path: Path,
+    numbers: list[int],
+    layout: bool,
+    password: str | None,
+    poppler_path: str | Path | None,
+) -> dict[int, str]:
+    """Text for the given physical pages via poppler's pdftotext, one invocation
+    per contiguous page run. pdftotext ends every page with a form feed, which is
+    how the output is split back into pages."""
+    exe = _find_pdftotext(poppler_path)
+    texts: dict[int, str] = {}
+    for start, end in _contiguous_runs(numbers):
+        cmd = [exe, "-f", str(start), "-l", str(end), "-enc", "UTF-8"]
+        if layout:
+            cmd.append("-layout")
+        if password is not None:
+            cmd += ["-upw", password, "-opw", password]
+        cmd += [str(path), "-"]
+        proc = subprocess.run(cmd, capture_output=True)
+        if proc.returncode != 0:
+            detail = proc.stderr.decode("utf-8", "replace").strip()
+            raise InvalidPdfError(
+                f"pdftotext failed on {path}: {detail or f'exit code {proc.returncode}'}"
+            )
+        out = proc.stdout.decode("utf-8", "replace").replace("\r\n", "\n")
+        chunks = out.split("\f")
+        for offset in range(end - start + 1):
+            texts[start + offset] = chunks[offset] if offset < len(chunks) else ""
+    return texts
+
+
+def _page_texts(
+    path: Path,
+    reader: PdfReader,
+    numbers: list[int],
+    engine: TextEngine,
+    layout: bool,
+    password: str | None,
+    poppler_path: str | Path | None,
+) -> dict[int, str]:
+    """Extracted text per physical page number, using the requested engine."""
+    if engine == "poppler":
+        return _pdftotext_pages(path, numbers, layout, password, poppler_path)
+    if engine == "pypdf":
+        mode = "layout" if layout else "plain"
+        return {n: reader.pages[n - 1].extract_text(extraction_mode=mode) or "" for n in numbers}
+    if engine == "pdfplumber":
+        with pdfplumber.open(path, password=password) as pdf:
+            return {n: pdf.pages[n - 1].extract_text(layout=layout) or "" for n in numbers}
+    raise ValueError(f"Unknown text engine: {engine!r}")
+
+
 def get_text(
     path: Path,
     pages: PageSpec = "all",
     layout: bool = False,
+    engine: TextEngine = "poppler",
     password: str | None = None,
     physical: bool = False,
+    poppler_path: str | Path | None = None,
 ) -> list[PageText]:
-    """Extract text per page. layout=True uses pdfplumber's layout-aware extraction."""
+    """Extract text per page. layout=True preserves horizontal positioning
+    (columns, indentation) with any engine.
+
+    The default engine shells out to poppler's pdftotext, which segments words
+    correctly on PDFs that encode word gaps as glyph positioning instead of
+    space characters. "pypdf" and "pdfplumber" are in-process and faster, but
+    run words together on such PDFs (issue #1) — opt in only when that risk is
+    acceptable downstream.
+    """
     reader = _open_reader(path, password)
     numbers, labels = _resolve_pages(reader, pages, physical)
-    results: list[PageText] = []
-    if layout:
-        with pdfplumber.open(path, password=password) as pdf:
-            for n in numbers:
-                text = pdf.pages[n - 1].extract_text(layout=True) or ""
-                results.append(
-                    PageText(
-                        physical_page=n,
-                        labeled_page=_label_for(labels, n),
-                        text=text,
-                        has_text=bool(text.strip()),
-                    )
-                )
-    else:
-        for n in numbers:
-            text = reader.pages[n - 1].extract_text() or ""
-            results.append(
-                PageText(
-                    physical_page=n,
-                    labeled_page=_label_for(labels, n),
-                    text=text,
-                    has_text=bool(text.strip()),
-                )
-            )
-    return results
+    texts = _page_texts(path, reader, numbers, engine, layout, password, poppler_path)
+    return [
+        PageText(
+            physical_page=n,
+            labeled_page=_label_for(labels, n),
+            text=texts[n],
+            has_text=bool(texts[n].strip()),
+        )
+        for n in numbers
+    ]
 
 
 def get_tables(
@@ -261,15 +329,18 @@ def search(
     ignore_case: bool = True,
     context: int = 80,
     max_hits: int = 100,
+    engine: TextEngine = "poppler",
     password: str | None = None,
     physical: bool = False,
+    poppler_path: str | Path | None = None,
 ) -> list[SearchHit]:
     """Search page text for a phrase or regular expression.
 
     Plain queries match with whitespace normalized (runs of spaces/newlines
     collapse to single spaces), so phrases match across line wraps in extracted
     text. regex=True matches the raw page text instead. Results are capped at
-    max_hits; each hit carries up to `context` characters of before/after context.
+    max_hits; each hit carries up to `context` characters of before/after
+    context. `engine` selects the text extractor, as in get_text.
     """
     query = query.strip() if not regex else query
     if not query:
@@ -285,9 +356,10 @@ def search(
 
     reader = _open_reader(path, password)
     numbers, labels = _resolve_pages(reader, pages, physical)
+    texts = _page_texts(path, reader, numbers, engine, False, password, poppler_path)
     hits: list[SearchHit] = []
     for n in numbers:
-        text = reader.pages[n - 1].extract_text() or ""
+        text = texts[n]
         if not regex:
             text = re.sub(r"\s+", " ", text)
         for m in pattern.finditer(text):

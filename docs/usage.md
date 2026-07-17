@@ -63,15 +63,27 @@ summary includes its `label` — handy for seeing how labels map to physical pos
 ### `pdfx text` — extract text
 
 ```sh
-uv run pdfx text report.pdf --pages 3-7           # JSON: [{physical_page, labeled_page,
-                                                  #         text, has_text}, ...]
-uv run pdfx text report.pdf --pages 1 --plain     # raw text only
-uv run pdfx text report.pdf --pages all --layout  # layout-aware (slower, better columns)
+uv run pdfx text report.pdf --pages 3-7            # JSON: [{physical_page, labeled_page,
+                                                   #         text, has_text}, ...]
+uv run pdfx text report.pdf --pages 1 --plain      # raw text only
+uv run pdfx text report.pdf --pages all --layout   # preserve columns/indentation
+uv run pdfx text report.pdf --engine pypdf         # in-process extractor (see below)
 ```
 
-The default extractor is pypdf. `--layout` switches to pdfplumber's layout-aware
-extraction, which preserves horizontal positioning — useful for multi-column pages
-or when reading order matters.
+The default extractor shells out to poppler's `pdftotext` (see
+[Poppler](#poppler) below), because it is the only widely available extractor
+that reliably segments words on PDFs that encode word gaps as glyph positioning
+instead of space characters — on such files pure-Python extractors silently run
+words together (`Whetheryouarelooking...`), which poisons search and any
+downstream text processing.
+
+`--engine pypdf` or `--engine pdfplumber` (library: `engine="pypdf"`) select an
+in-process extractor instead: faster (no subprocess) and poppler-free, but only
+safe when you know your PDFs encode spaces conventionally, or when approximate
+text is acceptable.
+
+`--layout` preserves horizontal positioning (columns, indentation) and works
+with every engine — useful for multi-column pages or when reading order matters.
 
 ### `pdfx tables` — extract tables
 
@@ -100,7 +112,9 @@ Plain queries are matched with whitespace normalized, so phrases match across li
 breaks in the extracted text; `--regex` matches the raw text instead. Matching is
 case-insensitive unless `--case-sensitive`. Results are capped at `--max` hits
 (default 100) with a notice on stderr when the cap is reached. No matches is an
-empty list, not an error.
+empty list, not an error. Search reads page text through the same engines as
+`pdfx text` (`--engine`, default poppler) — with a mis-segmenting engine, phrase
+queries can silently miss text whose spaces were dropped.
 
 ### `pdfx images` — embedded images
 
@@ -190,9 +204,12 @@ text = core.get_text("locked.pdf", "all", password="secret")
 Errors raise `FileNotFoundError`, `pdfx.PageSpecError`, or subclasses of
 `pdfx.core.PdfxError` (`InvalidPdfError`, `PasswordError`, `PopplerNotFoundError`).
 
-## Poppler (rendering only)
+## Poppler
 
-`pdfx render` shells out to poppler via pdf2image; everything else works without it.
+`pdfx text` and `pdfx search` shell out to poppler's `pdftotext` by default, and
+`pdfx render` shells out to poppler via pdf2image. `index`, `tables`, and
+`images` work without poppler, as do `text`/`search` with `--engine pypdf` or
+`--engine pdfplumber`.
 
 - Linux: `apt install poppler-utils`
 - macOS: `brew install poppler`

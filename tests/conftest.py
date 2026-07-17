@@ -27,15 +27,19 @@ TABLE_DATA = [
 IMAGE_SIZE = (64, 48)
 
 
-def poppler_available() -> bool:
-    if shutil.which("pdftoppm"):
+def _has_poppler_tool(name: str) -> bool:
+    if shutil.which(name):
         return True
     poppler_path = os.environ.get("PDFX_POPPLER_PATH")
-    return bool(poppler_path and (Path(poppler_path) / "pdftoppm.exe").exists())
+    return bool(poppler_path and shutil.which(name, path=poppler_path))
+
+
+def poppler_available() -> bool:
+    return _has_poppler_tool("pdftoppm") and _has_poppler_tool("pdftotext")
 
 
 requires_poppler = pytest.mark.skipif(
-    not poppler_available(), reason="poppler (pdftoppm) not installed"
+    not poppler_available(), reason="poppler (pdftoppm/pdftotext) not installed"
 )
 
 
@@ -150,6 +154,61 @@ def labeled_pdf(pdf_dir: Path) -> Path:
     path = pdf_dir / "labeled.pdf"
     with open(path, "wb") as f:
         writer.write(f)
+    return path
+
+
+KERNED_SENTENCE = (
+    "Whether you are looking for a quick reference or a deep dive this guide has you covered"
+)
+
+
+def _kerned_pdf_bytes(gap: int = 120, font_size: int = 10) -> bytes:
+    """Hand-written PDF whose word gaps are TJ kerning offsets (thousandths of
+    an em), with no space glyphs anywhere. This is the shape of PDF behind
+    issue #1: pypdf and pdfplumber run the words together, while poppler's
+    pdftotext segments them correctly. gap=120 sits below both pypdf's
+    space-inference threshold and pdfplumber's default x_tolerance."""
+    words = KERNED_SENTENCE.split()
+    lines = [words[i : i + 6] for i in range(0, len(words), 6)]
+    ops = ["BT", f"/F1 {font_size} Tf", "72 720 Td"]
+    for i, line in enumerate(lines):
+        if i:
+            ops.append(f"0 -{font_size + 4} Td")
+        tj = f" -{gap} ".join(f"({w})" for w in line)
+        ops.append(f"[{tj}] TJ")
+    ops.append("ET")
+    content = "\n".join(ops).encode("latin-1")
+
+    objects = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
+        b"/Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+        b"<< /Length %d >>\nstream\n" % len(content) + content + b"\nendstream",
+    ]
+    out = bytearray(b"%PDF-1.4\n")
+    offsets = []
+    for n, body in enumerate(objects, start=1):
+        offsets.append(len(out))
+        out += b"%d 0 obj\n" % n + body + b"\nendobj\n"
+    xref_pos = len(out)
+    out += b"xref\n0 %d\n" % (len(objects) + 1)
+    out += b"0000000000 65535 f \n"
+    for off in offsets:
+        out += b"%010d 00000 n \n" % off
+    out += b"trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n" % (
+        len(objects) + 1,
+        xref_pos,
+    )
+    return bytes(out)
+
+
+@pytest.fixture(scope="session")
+def kerned_pdf(pdf_dir: Path) -> Path:
+    """One page where word gaps are kerning offsets, not space characters."""
+    path = pdf_dir / "kerned.pdf"
+    path.write_bytes(_kerned_pdf_bytes())
     return path
 
 
