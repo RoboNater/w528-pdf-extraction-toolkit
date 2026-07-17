@@ -23,6 +23,7 @@ from pdfx.models import (
     PageSummary,
     PageText,
     RenderedPage,
+    SearchHit,
     Table,
 )
 from pdfx.pages import PageSpec, parse_page_labels, parse_pages
@@ -49,6 +50,10 @@ class PasswordError(PdfxError):
 
 class PopplerNotFoundError(PdfxError):
     """poppler binaries are required for rendering but were not found."""
+
+
+class QueryError(PdfxError):
+    """A search query is empty or not a valid regular expression."""
 
 
 def _open_reader(path: Path, password: str | None) -> PdfReader:
@@ -246,6 +251,58 @@ def get_images(
                 )
             )
     return results
+
+
+def search(
+    path: Path,
+    query: str,
+    pages: PageSpec = "all",
+    regex: bool = False,
+    ignore_case: bool = True,
+    context: int = 80,
+    max_hits: int = 100,
+    password: str | None = None,
+    physical: bool = False,
+) -> list[SearchHit]:
+    """Search page text for a phrase or regular expression.
+
+    Plain queries match with whitespace normalized (runs of spaces/newlines
+    collapse to single spaces), so phrases match across line wraps in extracted
+    text. regex=True matches the raw page text instead. Results are capped at
+    max_hits; each hit carries up to `context` characters of before/after context.
+    """
+    query = query.strip() if not regex else query
+    if not query:
+        raise QueryError("Empty search query")
+    flags = re.IGNORECASE if ignore_case else 0
+    if regex:
+        try:
+            pattern = re.compile(query, flags)
+        except re.error as exc:
+            raise QueryError(f"Invalid regular expression {query!r}: {exc}") from exc
+    else:
+        pattern = re.compile(re.escape(re.sub(r"\s+", " ", query)), flags)
+
+    reader = _open_reader(path, password)
+    numbers, labels = _resolve_pages(reader, pages, physical)
+    hits: list[SearchHit] = []
+    for n in numbers:
+        text = reader.pages[n - 1].extract_text() or ""
+        if not regex:
+            text = re.sub(r"\s+", " ", text)
+        for m in pattern.finditer(text):
+            hits.append(
+                SearchHit(
+                    physical_page=n,
+                    labeled_page=_label_for(labels, n),
+                    before=text[max(0, m.start() - context) : m.start()],
+                    match=m.group(),
+                    after=text[m.end() : m.end() + context],
+                )
+            )
+            if len(hits) >= max_hits:
+                return hits
+    return hits
 
 
 def render_pages(

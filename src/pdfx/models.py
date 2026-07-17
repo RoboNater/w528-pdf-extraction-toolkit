@@ -71,6 +71,14 @@ class ImageInfo(BaseModel):
     saved_path: str | None = None
 
 
+class SearchHit(BaseModel):
+    physical_page: int
+    labeled_page: str | None = None
+    before: str  # context preceding the match (whitespace-normalized unless regex)
+    match: str  # the exact matched text
+    after: str  # context following the match
+
+
 class RenderedPage(BaseModel):
     physical_page: int
     labeled_page: str | None = None

@@ -85,6 +85,23 @@ uv run pdfx tables report.pdf --pages 2 --csv out/   # one CSV file per table
 `--csv`, one file is written per table and the JSON output lists the written paths.
 Detection works best on ruled (lined) tables.
 
+### `pdfx search` — find text
+
+```sh
+uv run pdfx search book.pdf "gradient descent"              # JSON hits
+uv run pdfx search book.pdf "gradient descent" --plain      # page 141 (pp 168): …[match]…
+uv run pdfx search book.pdf "loss function" --pages 1-50    # restrict to labeled pages
+uv run pdfx search book.pdf "chapter \d+" --regex           # regex on raw page text
+```
+
+Each hit reports `physical_page`, `labeled_page`, the exact `match`, and
+`before`/`after` context (default 80 characters each side, `--context` to adjust).
+Plain queries are matched with whitespace normalized, so phrases match across line
+breaks in the extracted text; `--regex` matches the raw text instead. Matching is
+case-insensitive unless `--case-sensitive`. Results are capped at `--max` hits
+(default 100) with a notice on stderr when the cap is reached. No matches is an
+empty list, not an error.
+
 ### `pdfx images` — embedded images
 
 ```sh

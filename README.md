@@ -39,6 +39,7 @@ stdout and a message on stderr. Encrypted PDFs take `--password`.
 ```sh
 uv run pdfx index  FILE                          # document index as JSON
 uv run pdfx text   FILE --pages 3-7 [--layout]   # text; --plain for raw text
+uv run pdfx search FILE "query" [--regex]        # find text; hits with page context
 uv run pdfx tables FILE --pages all [--csv DIR]  # tables as JSON, or one CSV per table
 uv run pdfx images FILE --pages all --out DIR    # extract embedded images
 uv run pdfx render FILE --pages 1-3 --out DIR --dpi 200 --format png
