@@ -1,9 +1,13 @@
 import json
 
 import pytest
+from conftest import requires_poppler
 from test_cli import run_cli
 
 from pdfx import core
+
+# The default text engine shells out to poppler's pdftotext (issue #1).
+pytestmark = requires_poppler
 
 
 class TestSearchCore:
@@ -72,6 +76,12 @@ class TestSearchCore:
 
     def test_no_match_on_blank_page(self, blank_pdf):
         assert core.search(blank_pdf, "anything") == []
+
+    def test_kerned_pdf_phrase_found(self, kerned_pdf):
+        # issue #1: with pypdf extraction this text was "quickreference"
+        hits = core.search(kerned_pdf, "quick reference")
+        assert len(hits) == 1
+        assert core.search(kerned_pdf, "quick reference", engine="pypdf") == []
 
 
 class TestSearchCli:

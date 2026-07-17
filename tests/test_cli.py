@@ -21,6 +21,7 @@ def test_index_json(text_pdf):
     assert len(data["outline"]) == 3
 
 
+@requires_poppler
 def test_text_json(text_pdf):
     result = run_cli("text", text_pdf, "--pages", "2")
     assert result.returncode == 0
@@ -29,6 +30,21 @@ def test_text_json(text_pdf):
     assert "Chapter Two" in data[0]["text"]
 
 
+@requires_poppler
+def test_text_default_engine_spaces_kerned_pdf(kerned_pdf):
+    result = run_cli("text", kerned_pdf, "--plain")
+    assert result.returncode == 0
+    assert "Whether you are looking for a" in result.stdout
+
+
+def test_text_engine_pypdf(kerned_pdf):
+    # pure-Python engine: no poppler needed, but mis-segments this PDF (issue #1)
+    result = run_cli("text", kerned_pdf, "--engine", "pypdf", "--plain")
+    assert result.returncode == 0
+    assert "Whetheryouarelooking" in result.stdout
+
+
+@requires_poppler
 def test_text_plain(text_pdf):
     result = run_cli("text", text_pdf, "--pages", "1", "--plain")
     assert result.returncode == 0
@@ -69,12 +85,14 @@ def test_images_metadata(image_pdf):
     assert data[0]["saved_path"] is None
 
 
+@requires_poppler
 def test_password_flag(encrypted_pdf):
     result = run_cli("text", encrypted_pdf, "--pages", "1", "--password", ENCRYPTED_PASSWORD)
     assert result.returncode == 0
     assert "Chapter One" in json.loads(result.stdout)[0]["text"]
 
 
+@requires_poppler
 def test_labels_default_with_notice(labeled_pdf):
     result = run_cli("text", labeled_pdf, "--pages", "1", "--plain")
     assert result.returncode == 0
@@ -82,6 +100,7 @@ def test_labels_default_with_notice(labeled_pdf):
     assert "page labels" in result.stderr
 
 
+@requires_poppler
 def test_physical_flag(labeled_pdf):
     result = run_cli("text", labeled_pdf, "--pages", "1", "--plain", "--physical")
     assert result.returncode == 0
@@ -89,6 +108,7 @@ def test_physical_flag(labeled_pdf):
     assert result.stderr.strip() == ""
 
 
+@requires_poppler
 def test_no_notice_for_unlabeled_pdf(text_pdf):
     result = run_cli("text", text_pdf, "--pages", "1")
     assert result.returncode == 0
@@ -110,6 +130,7 @@ def test_index_shows_labels(labeled_pdf):
     assert data["pages"][7]["labeled_page"] == "1"
 
 
+@requires_poppler
 def test_unicode_output_is_utf8(unicode_pdf):
     # run_cli decodes stdout strictly as UTF-8, so this fails if the CLI writes
     # console-code-page bytes (the Windows default for piped output)
@@ -118,6 +139,7 @@ def test_unicode_output_is_utf8(unicode_pdf):
     assert "Café — Über naïve résumé" in result.stdout
 
 
+@requires_poppler
 def test_unicode_json_output(unicode_pdf):
     result = run_cli("text", unicode_pdf, "--pages", "1")
     assert result.returncode == 0

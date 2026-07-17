@@ -18,14 +18,19 @@ Managed with [uv](https://docs.astral.sh/uv/):
 uv sync
 ```
 
-Page rendering additionally requires [poppler](https://poppler.freedesktop.org/):
+Text extraction (default engine) and page rendering additionally require
+[poppler](https://poppler.freedesktop.org/):
 
 - Linux: `apt install poppler-utils`
 - macOS: `brew install poppler`
 - Windows: `winget install oschwartz10612.Poppler`
 
 If poppler is not on `PATH`, point `PDFX_POPPLER_PATH` (or `--poppler-path`) at its
-`bin` directory.
+`bin` directory. Text extraction defaults to poppler's `pdftotext` because it
+segments words correctly on PDFs that encode word gaps as glyph positioning
+rather than space characters; `--engine pypdf` / `--engine pdfplumber` select
+in-process extractors that avoid the subprocess but can run words together on
+such files.
 
 ## CLI
 
@@ -38,7 +43,7 @@ stdout and a message on stderr. Encrypted PDFs take `--password`.
 
 ```sh
 uv run pdfx index  FILE                          # document index as JSON
-uv run pdfx text   FILE --pages 3-7 [--layout]   # text; --plain for raw text
+uv run pdfx text   FILE --pages 3-7 [--layout]   # text; --plain for raw, --engine to pick extractor
 uv run pdfx search FILE "query" [--regex]        # find text; hits with page context
 uv run pdfx tables FILE --pages all [--csv DIR]  # tables as JSON, or one CSV per table
 uv run pdfx images FILE --pages all --out DIR    # extract embedded images
@@ -67,4 +72,5 @@ uv run ruff check src tests
 uv run ruff format src tests
 ```
 
-Render tests skip automatically when poppler is not installed.
+Tests that need poppler (text extraction with the default engine, search, render)
+skip automatically when it is not installed.

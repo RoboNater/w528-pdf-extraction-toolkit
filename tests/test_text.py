@@ -1,4 +1,9 @@
+from conftest import requires_poppler
+
 from pdfx import core
+
+# The default text engine shells out to poppler's pdftotext (issue #1).
+pytestmark = requires_poppler
 
 
 def test_all_pages(text_pdf):
@@ -21,10 +26,43 @@ def test_page_range(text_pdf):
 
 
 def test_layout_mode(text_pdf):
-    result = core.get_text(text_pdf, "1", layout=True)
-    assert result[0].physical_page == 1
+    for engine in ("poppler", "pypdf", "pdfplumber"):
+        result = core.get_text(text_pdf, "1", layout=True, engine=engine)
+        assert result[0].physical_page == 1
+        assert "Chapter One" in result[0].text
+        assert result[0].has_text is True
+
+
+def test_noncontiguous_pages(text_pdf):
+    # two separate pdftotext runs (-f 1 -l 1 and -f 3 -l 3)
+    result = core.get_text(text_pdf, "1,3")
+    assert [t.physical_page for t in result] == [1, 3]
     assert "Chapter One" in result[0].text
-    assert result[0].has_text is True
+    assert "Chapter Three" in result[1].text
+
+
+def test_engines_agree_on_conventional_pdf(text_pdf):
+    for engine in ("poppler", "pypdf", "pdfplumber"):
+        text = core.get_text(text_pdf, "2", engine=engine)[0].text
+        assert "This is page 2 of the test document." in text
+
+
+def test_kerned_pdf_default_engine_preserves_spaces(kerned_pdf):
+    # issue #1: word gaps encoded as kerning offsets, no space characters
+    text = core.get_text(kerned_pdf, "all")[0].text
+    assert "Whether you are looking for a" in text
+    assert "this guide has you covered" in text
+
+
+def test_kerned_pdf_pypdf_engine_runs_words_together(kerned_pdf):
+    # documents why pypdf is opt-in: it mis-segments kerned word gaps
+    text = core.get_text(kerned_pdf, "all", engine="pypdf")[0].text
+    assert "Whetheryouarelooking" in text
+
+
+def test_kerned_pdf_pdfplumber_engine_runs_words_together(kerned_pdf):
+    text = core.get_text(kerned_pdf, "all", engine="pdfplumber")[0].text
+    assert "Whetheryouarelooking" in text
 
 
 def test_labels_used_by_default(labeled_pdf):

@@ -8,6 +8,7 @@ Conventions:
 from __future__ import annotations
 
 import csv
+import enum
 import json
 import sys
 from contextlib import contextmanager
@@ -40,6 +41,27 @@ PhysicalOpt = Annotated[
         help="Interpret --pages as physical positions (first page = 1), "
         "ignoring the PDF's page labels",
     ),
+]
+
+
+class TextEngine(str, enum.Enum):
+    poppler = "poppler"
+    pypdf = "pypdf"
+    pdfplumber = "pdfplumber"
+
+
+EngineOpt = Annotated[
+    TextEngine,
+    typer.Option(
+        "--engine",
+        help="Text extractor: poppler (default; correct word spacing, needs poppler "
+        "installed), or pypdf/pdfplumber (in-process, faster, but may run words "
+        "together on some PDFs)",
+    ),
+]
+PopplerPathOpt = Annotated[
+    Optional[Path],
+    typer.Option("--poppler-path", help="Poppler bin directory if not on PATH"),
 ]
 
 
@@ -87,16 +109,27 @@ def text(
     file: FileArg,
     pages: PagesOpt = "all",
     layout: Annotated[
-        bool, typer.Option("--layout", help="Layout-aware extraction (pdfplumber)")
+        bool,
+        typer.Option("--layout", help="Layout-preserving extraction (columns, indentation)"),
     ] = False,
+    engine: EngineOpt = TextEngine.poppler,
     plain: Annotated[bool, typer.Option("--plain", help="Raw text instead of JSON")] = False,
     password: PasswordOpt = None,
     physical: PhysicalOpt = False,
+    poppler_path: PopplerPathOpt = None,
 ) -> None:
     """Extract text; JSON by default, --plain for raw text."""
     with _errors():
         _announce_labels(file, pages, physical, password)
-        result = core.get_text(file, pages, layout=layout, password=password, physical=physical)
+        result = core.get_text(
+            file,
+            pages,
+            layout=layout,
+            engine=engine.value,
+            password=password,
+            physical=physical,
+            poppler_path=poppler_path,
+        )
         if plain:
             print("\n\n".join(page.text for page in result))
         else:
@@ -148,11 +181,13 @@ def search(
         int, typer.Option("--context", help="Context characters around each match")
     ] = 80,
     max_hits: Annotated[int, typer.Option("--max", help="Maximum number of hits")] = 100,
+    engine: EngineOpt = TextEngine.poppler,
     plain: Annotated[
         bool, typer.Option("--plain", help="One human-readable line per hit instead of JSON")
     ] = False,
     password: PasswordOpt = None,
     physical: PhysicalOpt = False,
+    poppler_path: PopplerPathOpt = None,
 ) -> None:
     """Search page text; hits report both physical and labeled page numbers."""
     with _errors():
@@ -165,8 +200,10 @@ def search(
             ignore_case=not case_sensitive,
             context=context,
             max_hits=max_hits,
+            engine=engine.value,
             password=password,
             physical=physical,
+            poppler_path=poppler_path,
         )
         if plain:
             for hit in result:
@@ -209,10 +246,7 @@ def render(
     dpi: Annotated[int, typer.Option("--dpi", help="Render resolution")] = 200,
     fmt: Annotated[str, typer.Option("--format", help="Image format: png or jpeg")] = "png",
     password: PasswordOpt = None,
-    poppler_path: Annotated[
-        Optional[Path],
-        typer.Option("--poppler-path", help="Poppler bin directory if not on PATH"),
-    ] = None,
+    poppler_path: PopplerPathOpt = None,
     physical: PhysicalOpt = False,
 ) -> None:
     """Rasterize pages to image files."""
