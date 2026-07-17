@@ -36,9 +36,9 @@ POPPLER_HINT = (
     "rendering. Install it with 'apt install poppler-utils' (Linux), "
     "'brew install poppler' (macOS), or 'winget install oschwartz10612.Poppler' "
     "(Windows); alternatively set PDFX_POPPLER_PATH to poppler's bin directory. "
-    "For text extraction only, engine='pypdf' or engine='pdfplumber' selects a "
-    "pure-Python extractor instead (faster, but may run words together on PDFs "
-    "that encode word gaps as glyph positioning)."
+    "For text extraction only, --engine pypdf or --engine pdfplumber (library: "
+    "engine='pypdf') selects a pure-Python extractor instead, which may run "
+    "words together on PDFs that encode word gaps as glyph positioning."
 )
 
 TextEngine = Literal["poppler", "pypdf", "pdfplumber"]
