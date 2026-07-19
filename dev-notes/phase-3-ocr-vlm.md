@@ -1,196 +1,162 @@
-# Phase 3: OCR for Scanned Pages via Vision-Language Model
+# Phase 3: OCR for scanned pages via the Phase 2 VLM integration
 
 ## Motivation
 
-Phase 2 introduced VLM-based Markdown refinement: each page is rendered to an image and reviewed by a vision-language model that refines the programmatic extraction. This infrastructure makes OCR nearly free — a VLM reviewing pages can also transcribe scanned ones.
+Phase 2's AI pass renders each page and sends it to a vision-language model
+over an OpenAI-compatible API, with response validation, a per-page cache, and
+bounded concurrency. That infrastructure makes OCR nearly free: a VLM that
+reviews pages can also transcribe scanned ones. The roadmap's out-of-scope
+note anticipated exactly this — "Phase 2 is the natural moment to revisit that
+line deliberately" — and Phase 3 crosses it on those terms.
 
-Pages without a text layer ("no text layer" placeholders in Markdown output) are common in digitized documents and represent a real extraction bottleneck. The Phase 2 system prompt already teaches the VLM not to hallucinate (preferring draft text as ground truth), so we can repurpose that safety for OCR by crafting a prompt that asks the VLM to transcribe what it sees in the image when no draft text exists.
+Pages without a text layer currently surface as `has_text: false` in `index`
+output and `<!-- page N: no text layer -->` placeholders in `markdown` output.
+For digitized documents that's the whole document.
 
 ## Scope
 
 **In scope:**
-- VLM-based OCR via the same OpenAI-compatible API used for Markdown refinement
-- Triggered by `--ocr` flag in `pdfx markdown` command (opt-in, like `--ai`)
-- Pages with no text layer are sent to the VLM for transcription
-- All existing validation, caching, and cost controls from Markdown refinement apply
-- New `pdfx validate-vlm-ocr` command to test OCR on a small synthetic PDF with known content
+
+- VLM-based OCR (`pdfx.ocr.transcribe_pages`) over the same OpenAI-compatible
+  API, configuration, validation, caching, and concurrency as the Markdown AI
+  pass.
+- `pdfx markdown --ocr` (requires `--ai`): scanned pages get transcriptions
+  instead of placeholders.
+- `pdfx validate-vlm-ocr`: prove the user's model/endpoint can OCR before
+  spending money on a real document.
 
 **Out of scope:**
-- Local OCR engines (tesseract, paddleOCR) — VLM is the only backend for consistency with Phase 2
-- PDF creation/modification
-- Fine-grained OCR confidence scores or region-level output
-- Non-Latin script tuning (VLM performance varies; use case determines adequacy)
 
-## Design: OCR Transcription Prompt
+- Local OCR engines (tesseract, PaddleOCR, …). VLM-only keeps one backend, no
+  new dependencies, and one set of cost controls. Revisit only if a real
+  document needs offline OCR.
+- OCR confidence scores or region/bounding-box output.
+- PDF modification (e.g. writing a text layer back into the file).
 
-The Markdown refinement prompt prioritizes the draft text (ground truth for characters). For OCR, we flip the ground truth: the image is ground truth for content, the draft is empty or a placeholder.
+## Design
 
-**OCR System Prompt:**
+### Ground truth flips relative to the AI pass
 
-```
-You are an OCR agent. Your task is to transcribe all text visible in the page image,
-preserving the original layout and structure as much as possible.
+The Phase 2 prompt treats the *draft* as ground truth for characters and the
+image as ground truth for structure only, because VLMs hallucinate when
+transcribing. OCR has no draft: the image is the only source. The prompt
+therefore demands faithful transcription — keep exact words, numbers,
+punctuation, capitalization; no corrections, summaries, or additions; write
+`[illegible]` rather than guessing; `[no text]` for a blank page. Structure is
+conveyed with plain line breaks (one line per printed line, blank line between
+paragraphs), which reads fine in Markdown output and keeps the API useful as a
+plain-text extractor.
 
-Guidelines:
-- Transcribe exactly what you see; do not correct obvious OCR errors or apply corrections.
-- If text is partially obscured or illegible, indicate this with [...] and continue.
-- Preserve paragraph breaks, lists, tables, and heading-like formatting.
-- If there are page numbers, footers, or headers in the margin, include them at the top/bottom.
-- Return ONLY the transcribed text — no commentary, no markdown formatting, no code fences.
-```
+Without a draft there is no length-ratio check, so validation is weaker by
+nature. What remains: strip a wrapping code fence, reject empty responses, and
+reject responses under `MIN_TRANSCRIPTION_CHARS` (20) — refusals and
+non-answers are short, and a real page with less text than that is rare enough
+that keeping the placeholder is the safer failure mode.
 
-This is simpler than the Markdown prompt because there's no draft to preserve. The VLM transcribes what it sees, and we apply the same length validation (reject suspiciously short responses) to catch hallucination.
-
-## Implementation: `ocr.py`
-
-New module, parallel to `markdown.py`:
-
-```python
-def transcribe_pages(
-    path: Path,
-    pages: PageSpec = "all",
-    model: str | None = None,
-    base_url: str | None = None,
-    jobs: int = 1,
-    dpi: int = 150,
-    password: str | None = None,
-    physical: bool = False,
-    poppler_path: str | Path | None = None,
-    cache_dir: Path | None = None,
-    use_cache: bool = True,
-) -> list[PageText]
-```
-
-- Accepts the same parameters as Markdown refinement
-- Returns a list of `PageText` models (same as `core.get_text`)
-- Only processes pages with `has_text: false` (scanned pages)
-- Caches responses with the same key strategy (file hash + page + model + prompt version + dpi)
-- Falls back to empty text on any failure (VLM error, validation failure)
-- Populates `page.text` with transcribed content, `page.has_text = true` after successful OCR
-
-## Integration with Markdown
-
-The `to_markdown()` function gains an `--ocr` parameter:
+### `pdfx/ocr.py`
 
 ```python
-def to_markdown(
-    ...,
-    ocr: bool = False,  # new parameter
-    ...
-) -> MarkdownResult
+def transcribe_pages(path, pages="all", model=None, base_url=None, jobs=1,
+                     dpi=150, password=None, physical=False, poppler_path=None,
+                     cache_dir=None, use_cache=True, warnings=None) -> list[PageText]
 ```
 
-When `ocr=True` (and `ai=True` for safety — OCR needs the VLM API key anyway):
-1. Stage 1 runs normally (pages without text get the no-text placeholder)
-2. Stage 2 refinement runs as before
-3. **New stage 3:** After refinement, pages with `has_text=false` are sent for OCR transcription
-4. OCR results replace the placeholder with actual extracted text
-5. If both `--ai` and `--ocr` are enabled, the page is rendered once for both purposes
+- Scanned-page detection uses the same per-page test as `core.get_index`:
+  pypdf `extract_text()` is empty after stripping. Only those pages are
+  rendered (poppler) and sent; **one `PageText` per scanned page** comes back,
+  in page order. Pages with a text layer are not in the result — extracting
+  them is `core.get_text`'s job, and returning them here with empty text would
+  misreport `has_text`.
+- Failures (API error, rejected response) never raise: the page's result keeps
+  `has_text=False`/empty text and a message is appended to the caller's
+  `warnings` list. Configuration errors (no model, no key, missing `openai`
+  package) raise `VlmError` up front, same as the AI pass.
+- Cache key: `sha256("ocr:" + file_hash : page : model : PROMPT_VERSION : dpi)`
+  — the `ocr:` prefix and separate `PROMPT_VERSION` keep OCR and AI-pass
+  entries from ever colliding, and the version bumps when the prompt changes.
 
-## CLI Changes
+### Shared plumbing: `pdfx/vlm_utils.py`
 
-`pdfx markdown` adds `--ocr` flag:
+`markdown.py` and `ocr.py` share client construction (`make_client`: model/
+base-URL/key resolution from args then `PDFX_VLM_*` env, lazy `openai` import,
+`VlmError` on misconfiguration), the best-effort response cache, code-fence
+stripping, and file hashing. Factored out of `markdown.py` because importing it
+from `ocr.py` directly would be circular (`markdown` imports `ocr` for stage 3).
+
+One trap worth recording: `to_markdown`'s `ocr` boolean parameter shadows the
+`ocr` module name inside that function, so stage 3 imports `transcribe_pages`
+at function level. An earlier draft called `ocr.transcribe_pages(...)` and
+crashed with `AttributeError: 'bool' object has no attribute ...` on every
+`--ocr` run.
+
+### `pdfx markdown --ocr` (stage 3)
+
+Requires `--ai` — OCR needs the same key/model anyway, and a standalone `--ocr`
+that silently skipped refinement would surprise. `--ocr` without `--ai` errors
+immediately.
+
+After stage 2, pages still lacking text are passed to `transcribe_pages`.
+Successes replace the placeholder body and set `ocr_transcribed: true` (new
+`MarkdownPage` field, so JSON consumers can tell transcribed content from
+extracted content — it is *not* `ai_refined`, which keeps meaning "the AI pass
+restructured a draft"). Failures keep the placeholder and land in
+`result.warnings`. Each stage renders its own pages: refinement renders pages
+*with* text, OCR renders pages *without*, so no page is rendered twice and
+sharing renders across stages isn't worth the coupling.
+
+## `pdfx validate-vlm-ocr`
 
 ```sh
-pdfx markdown FILE.pdf --ai --ocr --model gpt-4-vision [other options]
+pdfx validate-vlm-ocr [--model NAME] [--base-url URL] [--dpi N] [--poppler-path DIR]
 ```
 
-The flag is only meaningful with `--ai`. A clear error if `--ocr` is passed without `--ai`.
+Generates a three-page synthetic PDF (reportlab + Pillow, in a temp dir):
 
-## Validation: `pdfx validate-vlm-ocr`
+1. **Page 1 — text layer.** Must be *skipped* by OCR; validates scanned-page
+   detection, not transcription.
+2. **Page 2 — prose as image.** Known prose containing digits, a serial
+   number, currency, and a date — the things VLM transcription gets wrong —
+   drawn with Pillow onto a white image embedded as the full page. No text
+   layer.
+3. **Page 3 — layout as image.** Heading, bullets, and a small aligned table.
 
-New CLI command for testing OCR on a short synthetic PDF:
+The generator's output is verified (page 1 has a text layer, pages 2-3 don't)
+before any API call — if a reportlab/Pillow change breaks that shape, the
+command fails loudly instead of testing nothing. The real `transcribe_pages`
+path then runs with the cache bypassed, and each transcription is scored
+against the known text with a whitespace-insensitive `difflib` ratio.
 
-```sh
-pdfx validate-vlm-ocr [--model NAME] [--base-url URL] [--dpi N]
-```
+Report (JSON, like everything else): per-page `status` — `skipped` / `ok` /
+`warn` (below threshold: 80 for prose, 70 for layout) / `fail` (no
+transcription) — with similarity and character counts, plus OCR warnings and
+an `overall_status` of `pass`/`warn`/`fail`. `fail` exits nonzero; `warn`
+exits zero but tells the user their model may struggle with their documents.
 
-Creates an in-memory PDF with:
-- Page 1: A simple text page with a text layer (for comparison)
-- Page 2: The same text rendered as an image, with no text layer (scanned)
-- Page 3: A more complex layout (title, bullets, table)
-
-The command runs OCR on pages 2 and 3, compares output to page 1, and reports:
-- Whether transcription succeeded
-- Character-level similarity to the original (Levenshtein distance as a percentage)
-- Warnings if similarity is below a threshold (e.g., < 85%)
-
-Example output:
-
-```json
-{
-  "model": "gpt-4-vision",
-  "pages": [
-    {
-      "page": 2,
-      "status": "ok",
-      "similarity": 94.2,
-      "original_chars": 250,
-      "transcribed_chars": 248,
-      "notes": "Minor spacing difference near end"
-    },
-    {
-      "page": 3,
-      "status": "ok",
-      "similarity": 89.1,
-      "original_chars": 480,
-      "transcribed_chars": 502,
-      "notes": "Table formatting adjusted for clarity"
-    }
-  ],
-  "overall_status": "pass"
-}
-```
-
-This lets users verify that their VLM choice works well for their document types.
+reportlab is imported lazily (it's a dev dependency of this repo, not a
+runtime dependency); the command says how to get it if missing.
 
 ## Testing
 
-- Unit tests for the OCR prompt and validation logic
-- Integration test: mock OpenAI-compatible endpoint, verify OCR requests carry the page image
-- Synthetic PDF fixture (reportlab-generated) with a text page and a scanned version
-- Test cache behavior: repeated OCR calls on the same page use the cache
-- Test fallback: when the VLM returns a suspiciously short response, fall back to empty text
+All OCR tests run against the same faked OpenAI-compatible endpoint as the
+Phase 2 tests (`fake_vlm` in conftest, promoted there from `test_markdown.py`);
+no network, no real key. Rendering tests carry `@requires_poppler`.
 
-## Caching Strategy
+- Response validation: fence stripped, empty/short rejected.
+- `transcribe_pages`: scanned page transcribed with the image in the request;
+  text-layer pages produce no API traffic and no result entries; API error and
+  short response keep `has_text=False` and append warnings; second run served
+  from cache; missing model/key raise `VlmError`.
+- `markdown --ocr`: placeholder replaced and `ocr_transcribed` set; OCR failure
+  keeps the placeholder with a warning; without `--ocr` the placeholder stays;
+  `--ocr` without `--ai` rejected (library and CLI).
+- Validation: the synthetic PDF has text layers exactly `[True, False, False]`
+  (the property that makes the command test anything at all); end-to-end
+  pass/warn/fail paths against the fake endpoint.
 
-OCR responses are cached alongside Markdown refinement, keyed on:
-```
-sha256(file_hash : page : model : OCR_PROMPT_VERSION : dpi)
-```
+## Future work
 
-The version bumps when the OCR system prompt changes, ensuring old cache entries don't apply to new prompts.
-
-## Cost and Performance
-
-- OCR is bounded by the same concurrency and caching as Markdown refinement
-- Per-page render happens once (shared between Markdown refinement and OCR if both are enabled)
-- Most users won't enable OCR unless they have scanned pages; selective opt-in keeps the default fast
-
-## Future Work
-
-- Integration with Phase 4 RAG: OCR-extracted text is searchable/queryable
-- Local OCR fallback (tesseract) for users without API access (separate from Phase 3)
-- Confidence/region-level output if a real document demands it
-- Language detection and multi-script support (monitor VLM capabilities)
-
----
-
-## Implementation Notes
-
-**Why VLM-based OCR over Tesseract?**
-- Consistency: same infrastructure, same cost controls, same caching as Markdown refinement
-- Simplicity: no new binary dependencies
-- Quality: modern VLMs (GPT-4V, Claude Vision) often outperform Tesseract on complex layouts
-- Tradeoff: requires API access; local-only users can't use it (but neither can Markdown `--ai`)
-
-**Why a separate `ocr.py` module?**
-- Clarity: OCR is distinct from Markdown refinement (different prompt, different ground truth)
-- Reuse: `transcribe_pages()` can be called independently of Markdown (e.g., to OCR a PDF without Markdown output)
-- Testing: easier to isolate and mock
-
-**Why opt-in with `--ocr`?**
-- Scanned pages are less common than digital ones
-- OCR incurs API cost per page
-- User controls when and whether to spend that cost
-- Backward compatibility: default behavior unchanged
+- Feed OCR'd text into Phase 5 chunking/RAG so scanned documents become
+  queryable.
+- Optional local OCR fallback (tesseract) if offline use ever matters.
+- A `pdfx ocr` CLI command exposing `transcribe_pages` directly, if plain-text
+  OCR without Markdown assembly turns out to be wanted.

@@ -391,18 +391,31 @@ def validate_vlm_ocr(
         Optional[str],
         typer.Option(
             "--base-url",
-            help="OpenAI-compatible endpoint URL (or set PDFX_VLM_BASE_URL)",
+            help="OpenAI-compatible endpoint URL (or set PDFX_VLM_BASE_URL); "
+            "key from PDFX_VLM_API_KEY or OPENAI_API_KEY",
         ),
     ] = None,
     dpi: Annotated[
-        int, typer.Option("--dpi", help="Render resolution for OCR test images")
+        int, typer.Option("--dpi", help="Render resolution for the OCR page images")
     ] = 150,
+    poppler_path: PopplerPathOpt = None,
 ) -> None:
-    """Test VLM OCR on a synthetic PDF with known content."""
+    """Check your VLM OCR setup by transcribing a synthetic scanned PDF.
+
+    Generates a three-page PDF (page 1 with a text layer, pages 2-3 image-only),
+    runs the real OCR path against the configured model, and scores the
+    transcriptions against the known text. Exits nonzero if OCR produced
+    nothing; 'warn' statuses report low similarity but still exit zero.
+    """
     with _errors():
-        from pdfx import ocr as ocr_module
-        result = ocr_module.validate_ocr(model=model, base_url=base_url, dpi=dpi)
+        from pdfx import ocr
+
+        result = ocr.validate_ocr(
+            model=model, base_url=base_url, dpi=dpi, poppler_path=poppler_path
+        )
         _dump(result)
+        if result["overall_status"] == "fail":
+            raise typer.Exit(1)
 
 
 if __name__ == "__main__":

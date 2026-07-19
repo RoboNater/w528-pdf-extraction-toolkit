@@ -17,8 +17,6 @@ from __future__ import annotations
 
 import base64
 import hashlib
-import json
-import os
 import re
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
@@ -29,7 +27,15 @@ import pdfplumber
 from pdfx import core
 from pdfx.models import ImageInfo, MarkdownPage, MarkdownResult
 from pdfx.pages import PageSpec
-from pdfx.vlm_utils import VlmError, cache_path, cache_read, cache_write, file_sha256
+from pdfx.vlm_utils import (
+    VlmError,
+    cache_path,
+    cache_read,
+    cache_write,
+    file_sha256,
+    make_client,
+    strip_code_fence,
+)
 
 # Bumped whenever the system prompt or request shape changes, so cached
 # responses from an older prompt are not reused.
@@ -86,8 +92,11 @@ def to_markdown(
     interrupted runs resume without re-billing.
 
     ocr=True (requires ai=True) adds a third stage: pages without a text layer
-    are sent to the VLM for OCR transcription. Uses the same VLM infrastructure
-    and caching as the AI pass, so cost is minimal if both are enabled.
+    are rendered and sent to the VLM for OCR transcription (pdfx.ocr), with the
+    same configuration, validation, and response cache as the AI pass.
+    Successful transcriptions replace the no-text placeholder and set
+    ocr_transcribed=True on the page; failures keep the placeholder and append
+    to warnings.
 
     Heading levels are otherwise page-local; two opt-in options anchor them to
     the document's outline (PDF bookmarks), and both are no-ops on documents
@@ -173,28 +182,36 @@ def to_markdown(
             contexts=contexts,
         )
 
-        if ocr:
-            # Stage 3: OCR for pages without a text layer.
-            ocr_results = ocr.transcribe_pages(
-                path,
-                ",".join(str(n) for n in numbers),
-                model=model,
-                base_url=base_url,
-                jobs=jobs,
-                dpi=dpi,
-                password=password,
-                physical=True,
-                poppler_path=poppler_path,
-                cache_dir=cache_dir,
-                use_cache=use_cache,
-            )
-            ocr_by_page = {r.physical_page: r for r in ocr_results}
+        no_text = [p for p in result_pages if not p.has_text]
+        if ocr and no_text:
+            # Stage 3: OCR pages without a text layer. Function-level import:
+            # the `ocr` parameter shadows the module name in this scope.
+            from pdfx.ocr import transcribe_pages
+
+            transcribed = {
+                r.physical_page: r
+                for r in transcribe_pages(
+                    path,
+                    ",".join(str(p.physical_page) for p in no_text),
+                    model=model,
+                    base_url=base_url,
+                    jobs=jobs,
+                    dpi=dpi,
+                    password=password,
+                    physical=True,
+                    poppler_path=poppler_path,
+                    cache_dir=cache_dir,
+                    use_cache=use_cache,
+                    warnings=warnings,
+                )
+            }
             for page in result_pages:
-                ocr_result = ocr_by_page.get(page.physical_page)
-                if ocr_result and ocr_result.has_text:
-                    # Replace the no-text placeholder with OCR output.
-                    page.markdown = ocr_result.text
+                hit = transcribed.get(page.physical_page)
+                if hit is not None and hit.has_text:
+                    # Replace the no-text placeholder with the transcription.
+                    page.markdown = hit.text
                     page.has_text = True
+                    page.ocr_transcribed = True
 
     return MarkdownResult(
         path=str(path),
@@ -376,29 +393,9 @@ def _refine_pages(
 ) -> None:
     """Review each page's draft against its rendered image; mutate accepted
     pages in place. Every failure path keeps the draft and appends a warning."""
-    model = model or os.environ.get("PDFX_VLM_MODEL")
-    if not model:
-        raise VlmError("The AI pass needs a model: pass model=/--model or set PDFX_VLM_MODEL.")
-    base_url = base_url or os.environ.get("PDFX_VLM_BASE_URL")
-    api_key = os.environ.get("PDFX_VLM_API_KEY") or os.environ.get("OPENAI_API_KEY")
-    if not api_key:
-        if base_url is None:
-            raise VlmError(
-                "The AI pass needs an API key: set PDFX_VLM_API_KEY (or OPENAI_API_KEY). "
-                "Local servers that skip auth also need --base-url/PDFX_VLM_BASE_URL."
-            )
-        api_key = "unused"  # local OpenAI-compatible servers ignore the key
-    try:
-        from openai import OpenAI
-    except ImportError as exc:
-        raise VlmError(
-            "The AI pass requires the 'openai' package; install the optional ai "
-            "dependencies with 'uv sync --extra ai' or 'pip install pdfx[ai]'."
-        ) from exc
-
+    client, model = make_client(model, base_url)
     if not pages:
         return
-    client = OpenAI(api_key=api_key, base_url=base_url)
     file_hash = file_sha256(path)
     cache = cache_path(cache_dir) if use_cache else None
 
@@ -437,7 +434,7 @@ def _refine_pages(
                 return f"page {n}: AI response rejected ({reason}); kept programmatic draft"
             page.markdown, page.ai_refined = accepted, True
             if cache is not None:
-                cache_write(cache, key, accepted)
+                cache_write(cache, key, accepted, PROMPT_VERSION)
             return None
 
         with ThreadPoolExecutor(max_workers=max(1, jobs)) as pool:
@@ -468,21 +465,13 @@ def _call_vlm(client, model: str, draft: str, image_path: Path, context: str = "
     return completion.choices[0].message.content
 
 
-_FENCE = re.compile(r"\A```[\w-]*\n(.*)\n```\Z", re.DOTALL)
-
-
 def _accept_response(draft: str, response: str | None) -> tuple[str | None, str]:
     """Validate a VLM response; (accepted_markdown, "") or (None, reason)."""
     if response is None:
         return None, "empty response"
-    text = response.strip()
-    fenced = _FENCE.match(text)
-    if fenced:
-        text = fenced.group(1).strip()
+    text = strip_code_fence(response.strip())
     if not text:
         return None, "empty response"
     if len(draft) >= 200 and len(text) < len(draft) // 2:
         return None, f"response suspiciously short ({len(text)} vs draft {len(draft)} chars)"
     return text, ""
-
-

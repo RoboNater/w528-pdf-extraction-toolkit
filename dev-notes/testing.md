@@ -1,64 +1,53 @@
 # How to run tests
 
-## Unit and integration tests
-
 ```bash
 uv run pytest
 ```
 
-uv ensures the environment matches the lockfile, and all fixture PDFs are generated on the fly (no setup needed). You should see ~140+ tests passed.
+That's it — uv ensures the environment matches the lockfile, and all fixture
+PDFs are generated on the fly (no setup needed). With poppler installed you
+should see 168 passed; without it the render-dependent tests skip (see below).
 
 Useful variations:
 
 ```bash
 uv run pytest -v                        # list each test by name
-uv run pytest tests/test_search.py      # one file
+uv run pytest tests/test_ocr.py         # one file
 uv run pytest -k labels                 # only tests matching a keyword
 uv run pytest -q --tb=short             # compact output, short tracebacks
-uv run pytest --co -q                   # just list available tests
 ```
 
-### Dependencies
+Things to know:
 
-Most text, search, and render tests require poppler (pdftotext/pdftoppm) on your PATH or via `PDFX_POPPLER_PATH`. The default text extraction engine shells out to pdftotext (issue #1).
+- Most text, search, render, markdown-AI, and OCR tests need poppler
+  (pdftotext/pdftoppm) on your PATH or via the `PDFX_POPPLER_PATH` environment
+  variable — the default text extraction engine shells out to pdftotext
+  (issue #1), and the AI/OCR passes render pages. If you see a large number of
+  skips with reason "poppler (pdftoppm/pdftotext) not installed", your shell
+  environment is missing the path for poppler. Any terminal you've opened
+  since the winget install has it, so for you they should just run.
+- The AI-pass tests (`test_markdown.py`) and OCR tests (`test_ocr.py`) run
+  against a fake OpenAI-compatible endpoint served from a local thread (the
+  `fake_vlm` fixture in `conftest.py`) — no network, no real API key, no cost.
+  Nothing in the suite ever calls a real model.
 
-Tests for OCR and Markdown's `--ai` pass require the optional `ai` dependencies: `uv sync --extra ai`. These tests use a mocked OpenAI-compatible endpoint (no real network calls).
+# Manually testing the VLM features
 
-## Manual testing
-
-### Testing Markdown conversion
+The automated suite proves the plumbing; whether a *specific model* is good at
+refinement/OCR is a judgment call the suite can't make. To exercise the real
+thing:
 
 ```bash
-# Stage 1 only (programmatic)
-uv run pdfx markdown report.pdf -o report.md --images-dir media
+# Check your OCR setup end-to-end on a synthetic scanned PDF (known text,
+# similarity scoring; exits nonzero if OCR produced nothing):
+PDFX_VLM_MODEL=gpt-4o-mini OPENAI_API_KEY=sk-... uv run pdfx validate-vlm-ocr
 
-# With AI refinement (requires --ai dependencies and model configured)
+# Markdown with AI refinement, then with OCR for scanned pages:
 PDFX_VLM_MODEL=gpt-4o-mini OPENAI_API_KEY=sk-... \
   uv run pdfx markdown report.pdf -o report.md --ai
-
-# With OCR for scanned pages
 PDFX_VLM_MODEL=gpt-4o-mini OPENAI_API_KEY=sk-... \
-  uv run pdfx markdown report.pdf -o report.md --ai --ocr
+  uv run pdfx markdown scanned.pdf -o scanned.md --ai --ocr
 ```
 
-### Testing OCR
-
-Use `validate-vlm-ocr` to verify VLM OCR works with your setup:
-
-```bash
-PDFX_VLM_MODEL=gpt-4o-mini OPENAI_API_KEY=sk-... \
-  uv run pdfx validate-vlm-ocr
-```
-
-Output reports per-page similarity scores (0-100%) compared to the original text. Scores below 80% may indicate the VLM struggles with your document style or language.
-
-You can also test OCR programmatically:
-
-```python
-from pdfx.ocr import transcribe_pages
-
-pages = transcribe_pages("scanned.pdf", model="gpt-4o-mini")
-for page in pages:
-    if page.has_text:
-        print(f"Page {page.physical_page}: {len(page.text)} chars")
-```
+Local servers (Ollama, LM Studio, vLLM) work the same way with
+`--base-url`/`PDFX_VLM_BASE_URL` and no API key.

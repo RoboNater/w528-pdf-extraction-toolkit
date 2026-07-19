@@ -85,6 +85,7 @@ class MarkdownPage(BaseModel):
     markdown: str  # page body only; the joined document adds provenance delimiters
     has_text: bool  # False when the page has no text layer, tables, or images
     ai_refined: bool = False  # True when the AI review pass replaced the draft
+    ocr_transcribed: bool = False  # True when the body came from VLM OCR of a scanned page
 
 
 class MarkdownResult(BaseModel):
