@@ -139,23 +139,36 @@ AI pass assigns levels matching the document hierarchy. Both are no-ops on
 documents without an outline. **Open decision:** evaluate on real documents,
 then promote one or both to default-on.
 
-## Phase 3 — Quality of life
+## Phase 3 — OCR for Scanned Pages (VLM-based) ✓ (design + implementation in progress)
 
-Three independent, small items.
+Use the Vision-Language Model infrastructure added in Phase 2 to transcribe pages
+without a text layer. A `--ocr` flag on `pdfx markdown` sends scanned pages to the
+VLM for transcription, with the same validation, caching, and cost controls as the
+Markdown refinement pass.
 
-**3a. `index` performance flag.** `get_index` currently extracts text from every
+**New command `pdfx validate-vlm-ocr`** to test OCR on a synthetic PDF with known
+content, allowing users to verify their VLM choice works well for their documents
+before running on large PDFs.
+
+See `dev-notes/phase-3-ocr-vlm.md` for the full design.
+
+## Phase 3b — Quality of Life (moved to Phase 4)
+
+Three independent, small items (deferred to preserve Phase 3 focus).
+
+**3b-a. `index` performance flag.** `get_index` currently extracts text from every
 page to compute `has_text` — the slowest part of indexing a large ebook. Add
 `check_text: bool = True` to `core.get_index` and `--no-text-check` to the CLI;
 when disabled, `has_text` is `null` in output (model field becomes
 `bool | None`). Index of a several-hundred-page PDF becomes near-instant.
 
-**3b. Form fields.** `core.get_fields(path, password) -> list[FormField]` via
+**3b-b. Form fields.** `core.get_fields(path, password) -> list[FormField]` via
 pypdf `reader.get_fields()`; model: `name`, `field_type` (text/checkbox/radio/
 choice/signature), `value`, `default_value`. New CLI command `pdfx fields FILE`.
 Documents without forms return `[]`. Fixture: generate a simple AcroForm with
 pypdf in conftest.
 
-**3c. CI.** GitHub Actions workflow: matrix of ubuntu-latest + windows-latest,
+**3b-c. CI.** GitHub Actions workflow: matrix of ubuntu-latest + windows-latest,
 steps = install uv (`astral-sh/setup-uv`), `uv sync`, `ruff check` +
 `ruff format --check`, `uv run pytest`. Ubuntu installs `poppler-utils` so
 render tests run; Windows skips them (already automatic). Requires the repo to

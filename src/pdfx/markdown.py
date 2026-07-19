@@ -29,6 +29,7 @@ import pdfplumber
 from pdfx import core
 from pdfx.models import ImageInfo, MarkdownPage, MarkdownResult
 from pdfx.pages import PageSpec
+from pdfx.vlm_utils import VlmError, cache_path, cache_read, cache_write, file_sha256
 
 # Bumped whenever the system prompt or request shape changes, so cached
 # responses from an older prompt are not reused.
@@ -50,15 +51,12 @@ Keep image links exactly as they appear in the draft.
 Return only the corrected Markdown for the page — no commentary, no code fences."""
 
 
-class VlmError(core.PdfxError):
-    """The AI pass is misconfigured (missing model, key, or openai package)."""
-
-
 def to_markdown(
     path: Path,
     pages: PageSpec = "all",
     images_dir: Path | None = None,
     ai: bool = False,
+    ocr: bool = False,
     model: str | None = None,
     base_url: str | None = None,
     jobs: int = 1,
@@ -87,6 +85,10 @@ def to_markdown(
     on file hash + page + model + prompt version + dpi + outline context, so
     interrupted runs resume without re-billing.
 
+    ocr=True (requires ai=True) adds a third stage: pages without a text layer
+    are sent to the VLM for OCR transcription. Uses the same VLM infrastructure
+    and caching as the AI pass, so cost is minimal if both are enabled.
+
     Heading levels are otherwise page-local; two opt-in options anchor them to
     the document's outline (PDF bookmarks), and both are no-ops on documents
     without one. outline_headings=True promotes outline titles found on their
@@ -97,6 +99,8 @@ def to_markdown(
     """
     if outline_context and not ai:
         raise VlmError("outline_context requires the AI pass (--outline-context needs --ai).")
+    if ocr and not ai:
+        raise VlmError("OCR requires the AI pass (--ocr needs --ai).")
     path = Path(path)
     reader = core._open_reader(path, password)
     numbers, labels = core._resolve_pages(reader, pages, physical)
@@ -168,6 +172,29 @@ def to_markdown(
             warnings=warnings,
             contexts=contexts,
         )
+
+        if ocr:
+            # Stage 3: OCR for pages without a text layer.
+            ocr_results = ocr.transcribe_pages(
+                path,
+                ",".join(str(n) for n in numbers),
+                model=model,
+                base_url=base_url,
+                jobs=jobs,
+                dpi=dpi,
+                password=password,
+                physical=True,
+                poppler_path=poppler_path,
+                cache_dir=cache_dir,
+                use_cache=use_cache,
+            )
+            ocr_by_page = {r.physical_page: r for r in ocr_results}
+            for page in result_pages:
+                ocr_result = ocr_by_page.get(page.physical_page)
+                if ocr_result and ocr_result.has_text:
+                    # Replace the no-text placeholder with OCR output.
+                    page.markdown = ocr_result.text
+                    page.has_text = True
 
     return MarkdownResult(
         path=str(path),
@@ -372,8 +399,8 @@ def _refine_pages(
     if not pages:
         return
     client = OpenAI(api_key=api_key, base_url=base_url)
-    file_hash = _file_sha256(path)
-    cache = _cache_path(cache_dir) if use_cache else None
+    file_hash = file_sha256(path)
+    cache = cache_path(cache_dir) if use_cache else None
 
     with tempfile.TemporaryDirectory(prefix="pdfx-vlm-") as tmp:
         spec = ",".join(str(p.physical_page) for p in pages)
@@ -397,7 +424,7 @@ def _refine_pages(
                 f"{file_hash}:{n}:{model}:{PROMPT_VERSION}:{dpi}:{context}".encode()
             ).hexdigest()
             if cache is not None:
-                hit = _cache_read(cache, key)
+                hit = cache_read(cache, key)
                 if hit is not None:
                     page.markdown, page.ai_refined = hit, True
                     return None
@@ -410,7 +437,7 @@ def _refine_pages(
                 return f"page {n}: AI response rejected ({reason}); kept programmatic draft"
             page.markdown, page.ai_refined = accepted, True
             if cache is not None:
-                _cache_write(cache, key, accepted)
+                cache_write(cache, key, accepted)
             return None
 
         with ThreadPoolExecutor(max_workers=max(1, jobs)) as pool:
@@ -459,33 +486,3 @@ def _accept_response(draft: str, response: str | None) -> tuple[str | None, str]
     return text, ""
 
 
-def _file_sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(1 << 20), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def _cache_path(cache_dir: Path | None) -> Path:
-    if cache_dir is None:
-        base = os.environ.get("PDFX_CACHE_DIR")
-        cache_dir = Path(base) if base else Path.home() / ".cache" / "pdfx"
-    return Path(cache_dir) / "vlm"
-
-
-def _cache_read(cache: Path, key: str) -> str | None:
-    target = cache / f"{key}.json"
-    try:
-        return json.loads(target.read_text(encoding="utf-8"))["markdown"]
-    except (OSError, ValueError, KeyError):
-        return None
-
-
-def _cache_write(cache: Path, key: str, markdown: str) -> None:
-    try:
-        cache.mkdir(parents=True, exist_ok=True)
-        payload = {"markdown": markdown, "prompt_version": PROMPT_VERSION}
-        (cache / f"{key}.json").write_text(json.dumps(payload), encoding="utf-8")
-    except OSError:
-        pass  # cache is best-effort; never fail the conversion over it

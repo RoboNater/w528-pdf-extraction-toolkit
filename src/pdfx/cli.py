@@ -264,6 +264,13 @@ def markdown(
             "the 'ai' optional dependencies)",
         ),
     ] = False,
+    ocr: Annotated[
+        bool,
+        typer.Option(
+            "--ocr",
+            help="Transcribe scanned (no text layer) pages using the VLM (requires --ai)",
+        ),
+    ] = False,
     model: Annotated[
         Optional[str],
         typer.Option("--model", help="VLM model name (or set PDFX_VLM_MODEL)"),
@@ -313,7 +320,7 @@ def markdown(
     physical: PhysicalOpt = False,
     poppler_path: PopplerPathOpt = None,
 ) -> None:
-    """Convert pages to Markdown: programmatic extraction, plus --ai review."""
+    """Convert pages to Markdown: programmatic extraction, plus --ai review and optional --ocr."""
     with _errors():
         _announce_labels(file, pages, physical, password)
         result = md.to_markdown(
@@ -321,6 +328,7 @@ def markdown(
             pages,
             images_dir=images_dir,
             ai=ai,
+            ocr=ocr,
             model=model,
             base_url=base_url,
             jobs=jobs,
@@ -371,6 +379,30 @@ def render(
                 physical=physical,
             )
         )
+
+
+@app.command()
+def validate_vlm_ocr(
+    model: Annotated[
+        Optional[str],
+        typer.Option("--model", help="VLM model name (or set PDFX_VLM_MODEL)"),
+    ] = None,
+    base_url: Annotated[
+        Optional[str],
+        typer.Option(
+            "--base-url",
+            help="OpenAI-compatible endpoint URL (or set PDFX_VLM_BASE_URL)",
+        ),
+    ] = None,
+    dpi: Annotated[
+        int, typer.Option("--dpi", help="Render resolution for OCR test images")
+    ] = 150,
+) -> None:
+    """Test VLM OCR on a synthetic PDF with known content."""
+    with _errors():
+        from pdfx import ocr as ocr_module
+        result = ocr_module.validate_ocr(model=model, base_url=base_url, dpi=dpi)
+        _dump(result)
 
 
 if __name__ == "__main__":

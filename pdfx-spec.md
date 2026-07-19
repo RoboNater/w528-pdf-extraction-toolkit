@@ -99,10 +99,33 @@ Conventions:
 
 ## Out of Scope (v1)
 
-- OCR of scanned pages
 - Form field extraction
 - PDF modification/creation
 - MCP server (v2 — but keep core importable and CLI-free to enable it)
+
+## Phase 3 — OCR for Scanned Pages (VLM-based)
+
+A `--ocr` flag for `pdfx markdown` command that uses a vision-language model to
+transcribe pages without a text layer. Leverages the same VLM infrastructure as
+the Markdown refinement pass (Phase 2), so cost is minimal when both features are
+used together. Pages with a text layer are unaffected.
+
+**CLI:**
+
+```sh
+pdfx markdown FILE.pdf --ai --ocr --model NAME [other options]
+```
+
+The `--ocr` flag is only meaningful with `--ai` (OCR requires the VLM API key anyway).
+
+**New validation command:**
+
+```sh
+pdfx validate-vlm-ocr [--model NAME] [--base-url URL] [--dpi N]
+```
+
+Tests OCR on a synthetic PDF with known content and reports similarity scores,
+allowing users to verify their VLM choice works well for their documents.
 
 ---
 

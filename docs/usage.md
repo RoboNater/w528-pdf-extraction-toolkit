@@ -56,7 +56,8 @@ a per-page summary:
 }
 ```
 
-`has_text: false` usually means a scanned/image-only page (OCR is out of scope for v1).
+`has_text: false` usually means a scanned/image-only page. Such pages can be
+transcribed using OCR (see `pdfx markdown --ocr` below).
 When the document defines page labels, `has_page_labels` is `true` and each page
 summary includes its `label` — handy for seeing how labels map to physical positions.
 
@@ -134,9 +135,10 @@ uv run pdfx markdown report.pdf -o report.md           # write a file
 uv run pdfx markdown report.pdf -o report.md --images-dir media
 uv run pdfx markdown report.pdf --json                 # full MarkdownResult as JSON
 uv run pdfx markdown report.pdf -o report.md --ai --model gpt-4o-mini
+uv run pdfx markdown report.pdf --ai --ocr --model gpt-4o-mini  # with OCR for scanned pages
 ```
 
-Converts pages to Markdown in two stages.
+Converts pages to Markdown in up to three stages.
 
 **Stage 1 (always runs)** assembles each page programmatically: prose text via
 the same engines as `pdfx text` (`--engine`, default poppler), tables as
@@ -156,6 +158,12 @@ prevents hallucinated "corrections" to numbers and names. Responses are
 validated (code fences stripped, suspiciously short output rejected); any
 per-page failure keeps the programmatic draft, sets `ai_refined: false`, and
 prints a warning to stderr.
+
+**Stage 3 (`--ai --ocr`)** transcribes pages without a text layer using the VLM.
+Pages identified as scanned (no text layer placeholder) are rendered and sent to
+the model for OCR. Uses the same API connection and caching as Stage 2, so the
+cost is minimal when both are enabled. Responses are validated the same way;
+failed transcriptions remain as no-text placeholders.
 
 **Outline-aware headings (opt-in).** Heading levels are otherwise page-local:
 stage 1 emits no headings, and the AI pass judges levels from the single page
@@ -191,6 +199,42 @@ Configuration:
 
 The AI pass requires poppler (page rendering) and the optional `ai` dependency
 group: `uv sync --extra ai` (or `pip install pdfx[ai]`).
+
+### `pdfx validate-vlm-ocr` — test OCR setup
+
+```sh
+uv run pdfx validate-vlm-ocr --model gpt-4o
+uv run pdfx validate-vlm-ocr --model gpt-4o --base-url https://api.openrouter.ai/openai/v1
+```
+
+Tests OCR on a synthetic PDF with known content (simple text, scanned layout,
+complex table). Renders pages without a text layer and sends them to the VLM for
+transcription, then reports per-page similarity scores compared to the original
+text. Helps verify that your VLM choice works well for your documents before
+running `pdfx markdown --ai --ocr` on large PDFs.
+
+Output includes:
+
+```json
+{
+  "model": "gpt-4o",
+  "pages": [
+    {
+      "page": 2,
+      "status": "ok",
+      "similarity": 94.2,
+      "original_chars": 250,
+      "transcribed_chars": 248
+    },
+    ...
+  ],
+  "overall_status": "pass"
+}
+```
+
+Scores below 80% (`status: "warn"`) may indicate the VLM struggles with your
+document style or language. Requires the optional `ai` dependency group:
+`uv sync --extra ai`.
 
 ### `pdfx render` — rasterize pages
 
@@ -271,10 +315,19 @@ from pdfx.markdown import to_markdown
 
 result = to_markdown("report.pdf", images_dir="media")        # stage 1 only
 result = to_markdown("report.pdf", ai=True, model="gpt-4o-mini", jobs=4)
+result = to_markdown("report.pdf", ai=True, ocr=True, model="gpt-4o-mini")  # with OCR
 print(result.markdown)                                        # joined document
 for page in result.pages:                                     # per-page bodies
     print(page.physical_page, page.ai_refined, page.markdown[:60])
 print(result.warnings)                                        # AI fallbacks, if any
+
+# OCR transcription (pdfx.ocr, requires --ai dependencies)
+from pdfx.ocr import transcribe_pages
+
+pages = transcribe_pages("report.pdf", pages="all", model="gpt-4o-mini")
+for page in pages:
+    if page.has_text:
+        print(f"Page {page.physical_page}: {len(page.text)} chars transcribed")
 ```
 
 Errors raise `FileNotFoundError`, `pdfx.PageSpecError`, or subclasses of
