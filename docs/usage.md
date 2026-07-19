@@ -126,6 +126,53 @@ uv run pdfx images report.pdf --pages all --out imgs/ # also save the image file
 Reports name, page, pixel size, and format for each embedded image. With `--out`,
 files are saved and `saved_path` is filled in.
 
+### `pdfx markdown` — convert to Markdown
+
+```sh
+uv run pdfx markdown report.pdf                        # Markdown on stdout
+uv run pdfx markdown report.pdf -o report.md           # write a file
+uv run pdfx markdown report.pdf -o report.md --images-dir media
+uv run pdfx markdown report.pdf --json                 # full MarkdownResult as JSON
+uv run pdfx markdown report.pdf -o report.md --ai --model gpt-4o-mini
+```
+
+Converts pages to Markdown in two stages.
+
+**Stage 1 (always runs)** assembles each page programmatically: prose text via
+the same engines as `pdfx text` (`--engine`, default poppler), tables as
+GitHub-flavored pipe tables placed in flow position (table content is cropped
+out of the prose by bounding box, so nothing appears twice), and — with
+`--images-dir DIR` — embedded images extracted there and referenced with links
+relative to the directory's parent, so put it next to your output file. Pages
+are joined with provenance comments (`<!-- page 30 (pp 38) -->`), and pages
+with no text layer become `<!-- page N: no text layer -->` placeholders.
+
+**Stage 2 (`--ai`)** sends each page's draft plus the rendered page image to a
+vision-language model over any OpenAI-compatible API (OpenAI, OpenRouter,
+Ollama, LM Studio, vLLM, ...), which fixes structure: reading order, heading
+levels, table shape, split/merged words. The draft's characters are treated as
+ground truth — the model restructures, it does not re-transcribe, which
+prevents hallucinated "corrections" to numbers and names. Responses are
+validated (code fences stripped, suspiciously short output rejected); any
+per-page failure keeps the programmatic draft, sets `ai_refined: false`, and
+prints a warning to stderr.
+
+Configuration:
+
+- `--model` or `PDFX_VLM_MODEL` — the model name (required with `--ai`).
+- `--base-url` or `PDFX_VLM_BASE_URL` — the endpoint; omit for OpenAI itself.
+- API key from `PDFX_VLM_API_KEY`, falling back to `OPENAI_API_KEY`. With a
+  `--base-url` set, a missing key is allowed (local servers ignore it).
+- `--jobs N` runs N VLM requests concurrently; `--dpi` sets the review image
+  resolution (default 150).
+- Accepted responses are cached (default `~/.cache/pdfx`, `--cache-dir` or
+  `PDFX_CACHE_DIR` to move it, `--no-cache` to skip) keyed on file hash, page,
+  model, and prompt version — an interrupted run on a large document resumes
+  without re-billing.
+
+The AI pass requires poppler (page rendering) and the optional `ai` dependency
+group: `uv sync --extra ai` (or `pip install pdfx[ai]`).
+
 ### `pdfx render` — rasterize pages
 
 ```sh
@@ -199,6 +246,16 @@ rendered = core.render_pages("report.pdf", "1", "out/", dpi=200)
 
 # Encrypted files
 text = core.get_text("locked.pdf", "all", password="secret")
+
+# Markdown conversion (pdfx.markdown, not core)
+from pdfx.markdown import to_markdown
+
+result = to_markdown("report.pdf", images_dir="media")        # stage 1 only
+result = to_markdown("report.pdf", ai=True, model="gpt-4o-mini", jobs=4)
+print(result.markdown)                                        # joined document
+for page in result.pages:                                     # per-page bodies
+    print(page.physical_page, page.ai_refined, page.markdown[:60])
+print(result.warnings)                                        # AI fallbacks, if any
 ```
 
 Errors raise `FileNotFoundError`, `pdfx.PageSpecError`, or subclasses of
@@ -206,10 +263,11 @@ Errors raise `FileNotFoundError`, `pdfx.PageSpecError`, or subclasses of
 
 ## Poppler
 
-`pdfx text` and `pdfx search` shell out to poppler's `pdftotext` by default, and
-`pdfx render` shells out to poppler via pdf2image. `index`, `tables`, and
-`images` work without poppler, as do `text`/`search` with `--engine pypdf` or
-`--engine pdfplumber`.
+`pdfx text` and `pdfx search` shell out to poppler's `pdftotext` by default,
+and `pdfx render` shells out to poppler via pdf2image; `pdfx markdown` uses
+`pdftotext` for pages without tables and rendering for its `--ai` pass.
+`index`, `tables`, and `images` work without poppler, as do `text`/`search`/
+`markdown` with `--engine pypdf` or `--engine pdfplumber`.
 
 - Linux: `apt install poppler-utils`
 - macOS: `brew install poppler`

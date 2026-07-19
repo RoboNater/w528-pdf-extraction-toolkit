@@ -159,6 +159,37 @@ def test_page_range_error(text_pdf):
     assert "1-3" in json.loads(result.stdout)["error"]
 
 
+def test_markdown_stdout(table_pdf):
+    result = run_cli("markdown", table_pdf)
+    assert result.returncode == 0
+    assert "| Name | Qty | Price |" in result.stdout
+    assert "<!-- page 1 -->" in result.stdout
+
+
+def test_markdown_out_file(table_pdf, tmp_path):
+    target = tmp_path / "out.md"
+    result = run_cli("markdown", table_pdf, "-o", target)
+    assert result.returncode == 0
+    assert result.stdout == ""
+    assert "| Apple | 3 | 1.20 |" in target.read_text(encoding="utf-8")
+
+
+def test_markdown_json(table_pdf):
+    result = run_cli("markdown", table_pdf, "--json")
+    assert result.returncode == 0
+    data = json.loads(result.stdout)
+    assert data["pages"][0]["physical_page"] == 1
+    assert data["pages"][0]["ai_refined"] is False
+    assert "| Name | Qty | Price |" in data["markdown"]
+    assert data["warnings"] == []
+
+
+def test_markdown_ai_config_error(table_pdf):
+    result = run_cli("markdown", table_pdf, "--ai")
+    assert result.returncode == 1
+    assert "model" in json.loads(result.stdout)["error"]
+
+
 @requires_poppler
 def test_render(text_pdf, tmp_path):
     result = run_cli("render", text_pdf, "--pages", "1", "--out", tmp_path, "--dpi", "72")

@@ -19,6 +19,7 @@ import typer
 from pydantic import BaseModel
 
 from pdfx import core
+from pdfx import markdown as md
 from pdfx.pages import PageSpecError
 
 app = typer.Typer(no_args_is_help=True, add_completion=False)
@@ -236,6 +237,94 @@ def images(
     with _errors():
         _announce_labels(file, pages, physical, password)
         _dump(core.get_images(file, pages, out_dir=out, password=password, physical=physical))
+
+
+@app.command()
+def markdown(
+    file: FileArg,
+    out: Annotated[
+        Optional[Path],
+        typer.Option("--out", "-o", help="Write Markdown to this file instead of stdout"),
+    ] = None,
+    pages: PagesOpt = "all",
+    images_dir: Annotated[
+        Optional[Path],
+        typer.Option(
+            "--images-dir",
+            help="Extract embedded images here and link them (best placed next to the "
+            "output file; images are skipped entirely when omitted)",
+        ),
+    ] = None,
+    ai: Annotated[
+        bool,
+        typer.Option(
+            "--ai",
+            help="Review each page's draft against its rendered image with a "
+            "vision-language model (OpenAI-compatible API; needs poppler and "
+            "the 'ai' optional dependencies)",
+        ),
+    ] = False,
+    model: Annotated[
+        Optional[str],
+        typer.Option("--model", help="VLM model name (or set PDFX_VLM_MODEL)"),
+    ] = None,
+    base_url: Annotated[
+        Optional[str],
+        typer.Option(
+            "--base-url",
+            help="OpenAI-compatible endpoint, e.g. an OpenRouter/Ollama/vLLM URL "
+            "(or set PDFX_VLM_BASE_URL); key from PDFX_VLM_API_KEY or OPENAI_API_KEY",
+        ),
+    ] = None,
+    jobs: Annotated[
+        int, typer.Option("--jobs", help="Concurrent VLM requests for the AI pass")
+    ] = 1,
+    dpi: Annotated[
+        int, typer.Option("--dpi", help="Render resolution for the AI pass page images")
+    ] = 150,
+    engine: EngineOpt = TextEngine.poppler,
+    as_json: Annotated[
+        bool, typer.Option("--json", help="Emit the full MarkdownResult as JSON")
+    ] = False,
+    cache_dir: Annotated[
+        Optional[Path],
+        typer.Option("--cache-dir", help="AI response cache location (default ~/.cache/pdfx)"),
+    ] = None,
+    no_cache: Annotated[
+        bool, typer.Option("--no-cache", help="Skip the AI response cache")
+    ] = False,
+    password: PasswordOpt = None,
+    physical: PhysicalOpt = False,
+    poppler_path: PopplerPathOpt = None,
+) -> None:
+    """Convert pages to Markdown: programmatic extraction, plus --ai review."""
+    with _errors():
+        _announce_labels(file, pages, physical, password)
+        result = md.to_markdown(
+            file,
+            pages,
+            images_dir=images_dir,
+            ai=ai,
+            model=model,
+            base_url=base_url,
+            jobs=jobs,
+            dpi=dpi,
+            engine=engine.value,
+            password=password,
+            physical=physical,
+            poppler_path=poppler_path,
+            cache_dir=cache_dir,
+            use_cache=not no_cache,
+        )
+        for warning in result.warnings:
+            print(warning, file=sys.stderr)
+        if as_json:
+            _dump(result)
+        elif out is not None:
+            out.write_text(result.markdown, encoding="utf-8")
+            print(f"Wrote {out}", file=sys.stderr)
+        else:
+            print(result.markdown, end="")
 
 
 @app.command()

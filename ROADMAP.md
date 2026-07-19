@@ -44,7 +44,7 @@ Landed as designed. Also fixed along the way: text extraction now defaults to
 `pdftotext` for correct word spacing (issue #1), and CLI stdout/stderr are
 forced to UTF-8 on Windows.
 
-## Phase 2 — Markdown conversion
+## Phase 2 — Markdown conversion ✅ (shipped in 0.3.0)
 
 A `pdfx markdown` command that turns a PDF (or page range) into clean Markdown,
 in two stages: a fast programmatic pass built from the existing extractors, and
