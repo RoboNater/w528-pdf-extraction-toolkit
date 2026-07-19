@@ -55,12 +55,20 @@ Markdown against the rendered page image and corrects it.
 
 ```python
 def to_markdown(path, pages="all", images_dir=None, ai=False, model=None,
-                base_url=None, dpi=150, password=None, physical=False) -> MarkdownResult
+                base_url=None, jobs=1, dpi=150, password=None,
+                physical=False) -> MarkdownResult
 ```
 
 - Text via `get_text` (pdftotext layout), tables via `get_tables` rendered as
   GitHub-flavored pipe tables, images extracted to `images_dir` and referenced
   with relative links (skipped when `images_dir` is `None`).
+- **Table/text dedup is the hard part, design it first:** table content appears
+  twice — as garbled whitespace-aligned rows in the prose text and again in the
+  pipe table. Use pdfplumber's table bounding boxes to crop table regions out
+  of the prose before assembling the page, so each table appears exactly once,
+  in flow position.
+- Pages with no text layer emit a placeholder (`<!-- page N: no text layer -->`)
+  rather than silent emptiness, in both stages.
 - Per-page output joined with an HTML-comment delimiter carrying provenance
   (`<!-- page 12 (pp 39) -->`), labels-first like everything else.
 - Models: `MarkdownPage` (`physical_page`, `labeled_page`, `markdown`,
@@ -72,21 +80,35 @@ def to_markdown(path, pages="all", images_dir=None, ai=False, model=None,
   with its draft Markdown to a vision-language model, which returns corrected
   Markdown: fixes reading order, merged/split words, table structure, missing
   headings, and content the programmatic pass dropped or garbled.
+- **The draft is ground truth for characters; the image is ground truth for
+  structure.** VLMs hallucinate when transcribing — swapped digits, "fixed"
+  serial numbers. The prompt instructs the model to rearrange, restructure, and
+  re-tag the draft, preferring the draft's literal characters over its own
+  reading of the image. This prompt decision is the difference between an AI
+  pass that improves quality and one that quietly corrupts data.
+- **Output validation before accepting a response:** strip a wrapping code
+  fence, reject responses whose length is wildly off from the draft (e.g.
+  under 50%), then fall back to the programmatic draft with
+  `ai_refined: false` — the same path as API errors. Per-page failure never
+  sinks the document.
+- **Cost controls:** pages are independent, so bounded concurrency via
+  `--jobs N`; and a per-page response cache keyed on file hash + page + model
+  + prompt version (under the images/output dir or a cache dir), so an
+  interrupted run on a 300-page document resumes instead of re-billing.
 - **OpenAI-compatible API only** — works against OpenAI, OpenRouter, Ollama,
   LM Studio, vLLM, etc. Configuration: `--model`/`PDFX_VLM_MODEL`,
   `--base-url`/`PDFX_VLM_BASE_URL`, key from `PDFX_VLM_API_KEY` falling back to
   `OPENAI_API_KEY`. Clear error when model or key is missing.
 - The `openai` client lives in an optional dependency group (`uv sync --extra
   ai`); the base install stays light and stage 1 never imports it.
-- Per-page failure (API error, timeout) falls back to the programmatic draft
-  for that page with `ai_refined: false` and a warning — one bad page never
-  sinks the document.
+- No-text-layer pages are **not** sent for transcription — that would be OCR
+  through the back door (see out of scope). They keep their placeholder.
 
 **CLI:**
 
 ```sh
 pdfx markdown FILE [-o OUT.md] [--pages SPEC] [--images-dir DIR]
-                   [--ai] [--model NAME] [--base-url URL] [--dpi N]
+                   [--ai] [--model NAME] [--base-url URL] [--jobs N] [--dpi N]
                    [--password PW] [--physical]
 ```
 
@@ -95,10 +117,18 @@ Markdown to stdout by default (`-o` writes a file); `--json` emits the
 of the tool.
 
 **Tests:** stage 1 on existing fixtures — headings/paragraph text, a table
-rendered as a valid pipe table, image links pointing at extracted files, page
-delimiters with correct labels. Stage 2 against a faked OpenAI-compatible
-endpoint (no network in CI): request carries image + draft, response replaces
-the page, API error falls back to the draft with `ai_refined: false`.
+rendered as a valid pipe table with its rows absent from the surrounding prose
+(the dedup), image links pointing at extracted files, page delimiters with
+correct labels, no-text-layer placeholder. Stage 2 against a faked
+OpenAI-compatible endpoint (no network in CI): request carries image + draft,
+response replaces the page, wrapping code fence stripped, too-short response
+rejected, API error falls back to the draft with `ai_refined: false`, second
+run served from cache.
+
+**Later, not in this phase:** a `--describe-images` flag (vector charts and
+figures don't come out via `get_images`; the VLM could write alt text), and
+feeding this output into Phase 4 — markdown with page delimiters is a better
+chunking input than raw text, so `chunk_document` may eventually consume it.
 
 ## Phase 3 — Quality of life
 
@@ -204,4 +234,7 @@ The spec's v2 goal: expose the same core to agents via MCP.
 ## Out of scope (unchanged)
 
 OCR for scanned pages, PDF modification/creation — revisit only when a real
-document needs them.
+document needs them. Note: the Phase 2 AI pass makes OCR nearly free (a VLM
+that reviews pages can also transcribe scanned ones), so Phase 2 is the natural
+moment to revisit that line deliberately — but it stays out of scope until a
+real document forces the decision.
