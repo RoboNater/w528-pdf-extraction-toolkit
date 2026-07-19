@@ -53,6 +53,27 @@ def long_pdf(pdf_dir: Path) -> Path:
     return path
 
 
+@pytest.fixture(scope="module")
+def outlined_pdf(pdf_dir: Path) -> Path:
+    """Two pages with a two-level outline whose titles are drawn on their
+    destination pages: 'Chapter Alpha' (level 0, page 1) and 'Background
+    Methods.' (level 1, page 2 — trailing dot exercises the fuzzy match)."""
+    path = pdf_dir / "outlined.pdf"
+    c = rl_canvas.Canvas(str(path), pagesize=letter)
+    c.bookmarkPage("ch1")
+    c.addOutlineEntry("Chapter Alpha", "ch1", level=0)
+    c.drawString(72, 720, "Chapter Alpha")
+    c.drawString(72, 700, "Opening prose on the first page.")
+    c.showPage()
+    c.bookmarkPage("sec11")
+    c.addOutlineEntry("Background Methods", "sec11", level=1)
+    c.drawString(72, 720, "Background Methods.")
+    c.drawString(72, 700, "Detail prose on the second page.")
+    c.showPage()
+    c.save()
+    return path
+
+
 # --- stage 1: programmatic pass ---
 
 
@@ -122,6 +143,45 @@ def test_accept_response_validation():
     accepted, reason = _accept_response(long_draft, "tiny")
     assert accepted is None and "short" in reason
     assert _accept_response("short draft", "ok")[0] == "ok"  # ratio check needs a long draft
+
+
+# --- outline-aware heading options ---
+
+
+def test_outline_headings_tagged_by_depth(outlined_pdf):
+    result = to_markdown(outlined_pdf, engine="pypdf", outline_headings=True)
+    assert "# Chapter Alpha" in result.pages[0].markdown
+    assert "Opening prose" in result.pages[0].markdown
+    assert "## Background Methods." in result.pages[1].markdown  # fuzzy: trailing dot on page
+
+
+def test_outline_headings_default_off(outlined_pdf):
+    result = to_markdown(outlined_pdf, engine="pypdf")
+    assert "#" not in result.markdown.replace("<!--", "")  # delimiters aside, no headings
+
+
+def test_outline_headings_unmatched_title_untouched(text_pdf):
+    # text_pdf bookmarks 'Section 2.1' on page 2 but never draws that text
+    result = to_markdown(text_pdf, engine="pypdf", outline_headings=True)
+    assert "# Chapter Two" in result.pages[1].markdown
+    assert "Section 2.1" not in result.pages[1].markdown
+
+
+def test_outline_headings_noop_without_outline(table_pdf):
+    with_opt = to_markdown(table_pdf, outline_headings=True)
+    without = to_markdown(table_pdf)
+    assert with_opt.markdown == without.markdown
+
+
+def test_heading_match_is_conservative():
+    from pdfx.markdown import _heading_match
+
+    assert _heading_match("Background Methods.", "Background Methods")
+    assert _heading_match("  background   methods ", "Background Methods")
+    assert not _heading_match("Background", "Background Methods")  # partial line
+    assert not _heading_match(
+        "Background Methods are described at length in this paragraph", "Background Methods"
+    )
 
 
 # --- stage 2: AI review pass against a fake OpenAI-compatible endpoint ---
@@ -298,6 +358,38 @@ def test_ai_no_cache_flag(text_pdf, fake_vlm, vlm_env, tmp_path):
     to_markdown(text_pdf, **args)
     to_markdown(text_pdf, **args)
     assert len(fake_vlm.requests) == 2
+
+
+@requires_poppler
+def test_outline_context_in_request(text_pdf, fake_vlm, vlm_env, tmp_path):
+    result = to_markdown(
+        text_pdf,
+        ai=True,
+        outline_context=True,
+        model="fake-vlm",
+        base_url=fake_vlm.base_url,
+        cache_dir=tmp_path,
+    )
+    assert all(p.ai_refined for p in result.pages)
+    texts = [r["messages"][1]["content"][0]["text"] for r in fake_vlm.requests]
+    page2 = next(t for t in texts if "This is page 2" in t)
+    assert "Section path at this page: Chapter Two" in page2
+    assert "Section 2.1 (level 2)" in page2  # on-page entries listed with levels
+
+
+@requires_poppler
+def test_outline_context_changes_cache_key(text_pdf, fake_vlm, vlm_env, tmp_path):
+    args = dict(
+        pages="1", ai=True, model="fake-vlm", base_url=fake_vlm.base_url, cache_dir=tmp_path
+    )
+    to_markdown(text_pdf, **args)
+    to_markdown(text_pdf, outline_context=True, **args)  # different prompt, no stale hit
+    assert len(fake_vlm.requests) == 2
+
+
+def test_outline_context_requires_ai(text_pdf, vlm_env):
+    with pytest.raises(VlmError, match="--ai"):
+        to_markdown(text_pdf, engine="pypdf", outline_context=True)
 
 
 def test_ai_skips_pages_without_text(blank_pdf, fake_vlm, vlm_env, tmp_path):

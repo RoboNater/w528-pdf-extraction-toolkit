@@ -64,6 +64,8 @@ def to_markdown(
     jobs: int = 1,
     dpi: int = 150,
     engine: core.TextEngine = "poppler",
+    outline_headings: bool = False,
+    outline_context: bool = False,
     password: str | None = None,
     physical: bool = False,
     poppler_path: str | Path | None = None,
@@ -82,12 +84,29 @@ def to_markdown(
     from PDFX_VLM_API_KEY or OPENAI_API_KEY. Requires poppler (page rendering)
     and the optional `ai` dependency group. Accepted responses are cached under
     cache_dir (default ~/.cache/pdfx/vlm, override with PDFX_CACHE_DIR) keyed
-    on file hash + page + model + prompt version + dpi, so interrupted runs
-    resume without re-billing.
+    on file hash + page + model + prompt version + dpi + outline context, so
+    interrupted runs resume without re-billing.
+
+    Heading levels are otherwise page-local; two opt-in options anchor them to
+    the document's outline (PDF bookmarks), and both are no-ops on documents
+    without one. outline_headings=True promotes outline titles found on their
+    destination pages to Markdown headings by outline depth (stage 1, no AI
+    needed). outline_context=True (requires ai=True) tells the VLM each page's
+    position in the outline so the levels it assigns match the document
+    hierarchy rather than the single page's visual scale.
     """
+    if outline_context and not ai:
+        raise VlmError("outline_context requires the AI pass (--outline-context needs --ai).")
     path = Path(path)
     reader = core._open_reader(path, password)
     numbers, labels = core._resolve_pages(reader, pages, physical)
+
+    flat_outline: list[tuple[str, int, int]] = []
+    if outline_headings or outline_context:
+        flat_outline = _flatten_outline(core._convert_outline(reader, reader.outline, labels))
+    entries_by_page: dict[int, list[tuple[str, int]]] = {}
+    for title, page_no, depth in flat_outline:
+        entries_by_page.setdefault(page_no, []).append((title, depth))
 
     images_by_page: dict[int, list[ImageInfo]] = {}
     if images_dir is not None:
@@ -113,6 +132,8 @@ def to_markdown(
                 body = _page_with_tables(pdf.pages[n - 1], found)
             else:
                 body = _clean_text(texts[n])
+            if outline_headings:
+                body = _tag_outline_headings(body, entries_by_page.get(n, []))
             image_links = _image_links(images_by_page.get(n, []), images_dir)
             body = "\n\n".join(part for part in (body, image_links) if part)
             bodies[n] = body
@@ -130,6 +151,9 @@ def to_markdown(
 
     warnings: list[str] = []
     if ai:
+        contexts = (
+            {n: _outline_context_for(flat_outline, n) for n in numbers} if outline_context else {}
+        )
         _refine_pages(
             path,
             [p for p in result_pages if p.has_text],
@@ -142,6 +166,7 @@ def to_markdown(
             cache_dir=cache_dir,
             use_cache=use_cache,
             warnings=warnings,
+            contexts=contexts,
         )
 
     return MarkdownResult(
@@ -229,6 +254,82 @@ def _image_links(infos: list[ImageInfo], images_dir: Path | None) -> str:
     return "\n".join(links)
 
 
+# --- outline-aware headings (both options are no-ops without an outline) ---
+
+
+def _flatten_outline(items, depth: int = 0) -> list[tuple[str, int, int]]:
+    """Outline tree -> [(title, physical_page, depth)] in document order.
+    Entries whose destination page could not be resolved are dropped, but their
+    children are kept (at their own depth)."""
+    flat: list[tuple[str, int, int]] = []
+    for item in items:
+        if item.physical_page is not None:
+            flat.append((item.title, item.physical_page, depth))
+        flat.extend(_flatten_outline(item.children, depth + 1))
+    return flat
+
+
+def _norm_heading(text: str) -> str:
+    return re.sub(r"\s+", " ", text).strip().strip(".:-–—·").strip().casefold()
+
+
+def _heading_match(line: str, title: str) -> bool:
+    """Conservative fuzzy match: equal after normalization, or the title makes
+    up nearly the whole line (tolerates trailing section numbers/punctuation)."""
+    norm_line, norm_title = _norm_heading(line), _norm_heading(title)
+    if not norm_line or not norm_title:
+        return False
+    return norm_line == norm_title or (
+        norm_title in norm_line and len(norm_title) >= 0.8 * len(norm_line)
+    )
+
+
+def _tag_outline_headings(body: str, entries: list[tuple[str, int]]) -> str:
+    """Promote lines that match an outline title on this page to Markdown
+    headings, leveled by outline depth (top level = '#'). Each title tags at
+    most one line; table/link/heading lines are never touched."""
+    if not entries or not body:
+        return body
+    lines = body.split("\n")
+    remaining = list(entries)
+    for i, line in enumerate(lines):
+        if not line.strip() or line.lstrip().startswith(("|", "#", "!")):
+            continue
+        for entry in remaining:
+            title, depth = entry
+            if _heading_match(line, title):
+                lines[i] = "#" * min(depth + 1, 6) + " " + line.strip()
+                remaining.remove(entry)
+                break
+    return "\n".join(lines)
+
+
+def _outline_context_for(flat_outline: list[tuple[str, int, int]], n: int) -> str:
+    """Prompt block telling the VLM where page n sits in the outline: the
+    section path open at this page, and any outline entries pointing at it."""
+    if not flat_outline:
+        return ""
+    stack: list[tuple[str, int]] = []
+    for title, page_no, depth in flat_outline:
+        if page_no <= n:
+            del stack[depth:]
+            stack.append((title, depth))
+    on_page = [(title, depth) for title, page_no, depth in flat_outline if page_no == n]
+    if not stack and not on_page:
+        return ""
+    parts = ["Document outline context (from the PDF's bookmarks):"]
+    if stack:
+        parts.append("- Section path at this page: " + " > ".join(title for title, _ in stack))
+    if on_page:
+        listed = ", ".join(f"{title} (level {depth + 1})" for title, depth in on_page)
+        parts.append(f"- Outline entries pointing at this page: {listed}")
+    parts.append(
+        "Use this to assign heading levels that match the document hierarchy: "
+        "level 1 = '#', level 2 = '##', and so on."
+    )
+    return "\n".join(parts)
+
+
 # --- stage 2: AI review pass ---
 
 
@@ -244,6 +345,7 @@ def _refine_pages(
     cache_dir: Path | None,
     use_cache: bool,
     warnings: list[str],
+    contexts: dict[int, str],
 ) -> None:
     """Review each page's draft against its rendered image; mutate accepted
     pages in place. Every failure path keeps the draft and appends a warning."""
@@ -290,8 +392,9 @@ def _refine_pages(
 
         def refine(page: MarkdownPage) -> str | None:
             n = page.physical_page
+            context = contexts.get(n, "")
             key = hashlib.sha256(
-                f"{file_hash}:{n}:{model}:{PROMPT_VERSION}:{dpi}".encode()
+                f"{file_hash}:{n}:{model}:{PROMPT_VERSION}:{dpi}:{context}".encode()
             ).hexdigest()
             if cache is not None:
                 hit = _cache_read(cache, key)
@@ -299,7 +402,7 @@ def _refine_pages(
                     page.markdown, page.ai_refined = hit, True
                     return None
             try:
-                response = _call_vlm(client, model, page.markdown, rendered[n])
+                response = _call_vlm(client, model, page.markdown, rendered[n], context)
             except Exception as exc:  # any API failure keeps the draft
                 return f"page {n}: AI pass failed ({exc}); kept programmatic draft"
             accepted, reason = _accept_response(page.markdown, response)
@@ -314,8 +417,11 @@ def _refine_pages(
             warnings.extend(w for w in pool.map(refine, pages) if w is not None)
 
 
-def _call_vlm(client, model: str, draft: str, image_path: Path) -> str | None:
+def _call_vlm(client, model: str, draft: str, image_path: Path, context: str = "") -> str | None:
     image_b64 = base64.b64encode(image_path.read_bytes()).decode("ascii")
+    text = f"Draft Markdown for this page:\n\n{draft}"
+    if context:
+        text += f"\n\n{context}"
     completion = client.chat.completions.create(
         model=model,
         messages=[
@@ -323,7 +429,7 @@ def _call_vlm(client, model: str, draft: str, image_path: Path) -> str | None:
             {
                 "role": "user",
                 "content": [
-                    {"type": "text", "text": f"Draft Markdown for this page:\n\n{draft}"},
+                    {"type": "text", "text": text},
                     {
                         "type": "image_url",
                         "image_url": {"url": f"data:image/png;base64,{image_b64}"},

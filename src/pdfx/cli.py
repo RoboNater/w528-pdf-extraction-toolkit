@@ -283,6 +283,22 @@ def markdown(
         int, typer.Option("--dpi", help="Render resolution for the AI pass page images")
     ] = 150,
     engine: EngineOpt = TextEngine.poppler,
+    outline_headings: Annotated[
+        bool,
+        typer.Option(
+            "--outline-headings",
+            help="Promote outline (bookmark) titles found on their pages to Markdown "
+            "headings, leveled by outline depth; no-op without an outline",
+        ),
+    ] = False,
+    outline_context: Annotated[
+        bool,
+        typer.Option(
+            "--outline-context",
+            help="Tell the VLM each page's position in the document outline so heading "
+            "levels match the document hierarchy (requires --ai)",
+        ),
+    ] = False,
     as_json: Annotated[
         bool, typer.Option("--json", help="Emit the full MarkdownResult as JSON")
     ] = False,
@@ -310,6 +326,8 @@ def markdown(
             jobs=jobs,
             dpi=dpi,
             engine=engine.value,
+            outline_headings=outline_headings,
+            outline_context=outline_context,
             password=password,
             physical=physical,
             poppler_path=poppler_path,

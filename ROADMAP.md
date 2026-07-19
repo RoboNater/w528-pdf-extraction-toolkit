@@ -130,6 +130,15 @@ figures don't come out via `get_images`; the VLM could write alt text), and
 feeding this output into Phase 4 — markdown with page delimiters is a better
 chunking input than raw text, so `chunk_document` may eventually consume it.
 
+**Post-ship additions (0.3.x, opt-in pending evaluation):** heading levels are
+otherwise page-local, so two outline-aware options anchor them to the PDF's
+bookmark tree: `--outline-headings` promotes outline titles found on their
+destination pages to headings by outline depth (stage 1, no AI), and
+`--outline-context` feeds each page's outline path into the VLM prompt so the
+AI pass assigns levels matching the document hierarchy. Both are no-ops on
+documents without an outline. **Open decision:** evaluate on real documents,
+then promote one or both to default-on.
+
 ## Phase 3 — Quality of life
 
 Three independent, small items.

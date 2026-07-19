@@ -54,7 +54,9 @@ uv run pdfx markdown FILE -o out.md [--images-dir media] [--ai]  # Markdown conv
 `markdown` converts pages to Markdown (prose, pipe tables, image links, with
 page-provenance comments). `--ai` adds a review pass where a vision-language
 model — any OpenAI-compatible API — checks each page's draft against the
-rendered page image and fixes structure; see
+rendered page image and fixes structure. `--outline-headings` and
+`--outline-context` (with `--ai`) use the PDF's outline to get heading levels
+right on pages extracted mid-document; see
 [docs/usage.md](docs/usage.md#pdfx-markdown--convert-to-markdown) for
 configuration. The AI pass needs
 the optional dependencies: `uv sync --extra ai`.

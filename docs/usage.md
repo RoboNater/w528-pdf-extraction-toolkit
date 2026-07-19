@@ -157,6 +157,25 @@ validated (code fences stripped, suspiciously short output rejected); any
 per-page failure keeps the programmatic draft, sets `ai_refined: false`, and
 prints a warning to stderr.
 
+**Outline-aware headings (opt-in).** Heading levels are otherwise page-local:
+stage 1 emits no headings, and the AI pass judges levels from the single page
+image, so a mid-document `##` section can come out as `#`. Two options anchor
+levels to the document's outline (PDF bookmarks); both are no-ops on documents
+without one:
+
+- `--outline-headings` (stage 1, no AI needed) promotes lines that match an
+  outline title on their destination page to headings leveled by outline depth
+  (top level = `#`). Matching is conservative — normalized-exact or
+  near-exact — so prose is never accidentally promoted; titles that don't
+  appear as on-page text are left alone.
+- `--outline-context` (requires `--ai`) tells the model each page's position
+  in the outline (section path plus any entries pointing at the page) so the
+  levels it assigns follow the document hierarchy instead of the page's visual
+  scale. Changes the cache key, so toggling it never reuses stale responses.
+
+Both are currently opt-in while we evaluate whether they should become default
+behavior.
+
 Configuration:
 
 - `--model` or `PDFX_VLM_MODEL` — the model name (required with `--ai`).
