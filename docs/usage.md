@@ -196,6 +196,9 @@ Configuration:
 - `--base-url` or `PDFX_VLM_BASE_URL` — the endpoint; omit for OpenAI itself.
 - API key from `PDFX_VLM_API_KEY`, falling back to `OPENAI_API_KEY`. With a
   `--base-url` set, a missing key is allowed (local servers ignore it).
+- `--organization` or `PDFX_VLM_ORG` — API organization ID, sent only when set.
+  For OpenAI-hosted accounts scoped to a specific org; leave unset for
+  local/third-party servers.
 - `--jobs N` runs N VLM requests concurrently; `--dpi` sets the review image
   resolution (default 150).
 - Accepted responses are cached (default `~/.cache/pdfx`, `--cache-dir` or
@@ -327,6 +330,8 @@ from pdfx.markdown import to_markdown
 result = to_markdown("report.pdf", images_dir="media")        # stage 1 only
 result = to_markdown("report.pdf", ai=True, model="gpt-4o-mini", jobs=4)
 result = to_markdown("report.pdf", ai=True, ocr=True, model="gpt-4o-mini")  # with OCR
+# model/base_url/organization also fall back to PDFX_VLM_MODEL/PDFX_VLM_BASE_URL/PDFX_VLM_ORG
+result = to_markdown("report.pdf", ai=True, model="gpt-4o", organization="org-abc123")
 print(result.markdown)                                        # joined document
 for page in result.pages:                                     # per-page bodies
     print(page.physical_page, page.ai_refined, page.ocr_transcribed, page.markdown[:60])

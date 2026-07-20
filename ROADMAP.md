@@ -177,12 +177,20 @@ transcriptions against the known text (whitespace-insensitive similarity, with
 ok/warn thresholds). Lets a user prove their model/endpoint works before
 spending money on a real document.
 
+**Shared VLM config** (`vlm_utils.make_client`, used by both the AI pass and
+OCR): `--model`/`--base-url`/`--organization` with `PDFX_VLM_MODEL` /
+`PDFX_VLM_BASE_URL` / `PDFX_VLM_ORG` env fallbacks, key from `PDFX_VLM_API_KEY`
+→ `OPENAI_API_KEY`. `--organization` is passed to the client only when set
+(OpenAI-hosted, org-scoped accounts); local/third-party servers leave it unset.
+A config file for these defaults is tracked separately (see issues).
+
 **Tests:** against the faked OpenAI-compatible endpoint from Phase 2 — scanned
 pages transcribed and text-layer pages skipped (no API traffic), request
 carries the page image, failure/short-response fallback with warnings, cache
 hits on the second run, `--ocr` placeholder replacement and `--ocr` without
 `--ai` rejected, validation PDF has the right text-layer shape, validate
-pass/warn/fail paths.
+pass/warn/fail paths, and config resolution including organization (arg/env
+precedence and the org reaching the wire as a header).
 
 See `dev-notes/phase-3-ocr-vlm.md` for the full design.
 

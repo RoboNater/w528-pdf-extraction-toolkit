@@ -65,6 +65,7 @@ def to_markdown(
     ocr: bool = False,
     model: str | None = None,
     base_url: str | None = None,
+    organization: str | None = None,
     jobs: int = 1,
     dpi: int = 150,
     engine: core.TextEngine = "poppler",
@@ -83,9 +84,11 @@ def to_markdown(
     given — embedded images extracted there and referenced with links relative
     to images_dir's parent (put images_dir next to your output file).
 
-    ai=True adds the VLM review pass: model/base_url come from the arguments or
-    the PDFX_VLM_MODEL / PDFX_VLM_BASE_URL environment variables, the API key
-    from PDFX_VLM_API_KEY or OPENAI_API_KEY. Requires poppler (page rendering)
+    ai=True adds the VLM review pass: model/base_url/organization come from the
+    arguments or the PDFX_VLM_MODEL / PDFX_VLM_BASE_URL / PDFX_VLM_ORG
+    environment variables, the API key from PDFX_VLM_API_KEY or OPENAI_API_KEY.
+    organization is only sent when set (OpenAI-hosted, org-scoped accounts).
+    Requires poppler (page rendering)
     and the optional `ai` dependency group. Accepted responses are cached under
     cache_dir (default ~/.cache/pdfx/vlm, override with PDFX_CACHE_DIR) keyed
     on file hash + page + model + prompt version + dpi + outline context, so
@@ -172,6 +175,7 @@ def to_markdown(
             [p for p in result_pages if p.has_text],
             model=model,
             base_url=base_url,
+            organization=organization,
             jobs=jobs,
             dpi=dpi,
             password=password,
@@ -195,6 +199,7 @@ def to_markdown(
                     ",".join(str(p.physical_page) for p in no_text),
                     model=model,
                     base_url=base_url,
+                    organization=organization,
                     jobs=jobs,
                     dpi=dpi,
                     password=password,
@@ -382,6 +387,7 @@ def _refine_pages(
     pages: list[MarkdownPage],
     model: str | None,
     base_url: str | None,
+    organization: str | None,
     jobs: int,
     dpi: int,
     password: str | None,
@@ -393,7 +399,7 @@ def _refine_pages(
 ) -> None:
     """Review each page's draft against its rendered image; mutate accepted
     pages in place. Every failure path keeps the draft and appends a warning."""
-    client, model = make_client(model, base_url)
+    client, model = make_client(model, base_url, organization)
     if not pages:
         return
     file_hash = file_sha256(path)

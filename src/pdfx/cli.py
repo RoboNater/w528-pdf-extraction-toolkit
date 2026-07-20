@@ -64,6 +64,14 @@ PopplerPathOpt = Annotated[
     Optional[Path],
     typer.Option("--poppler-path", help="Poppler bin directory if not on PATH"),
 ]
+OrgOpt = Annotated[
+    Optional[str],
+    typer.Option(
+        "--organization",
+        help="VLM API organization ID (or set PDFX_VLM_ORG); OpenAI-hosted, "
+        "org-scoped accounts only — leave unset for local/third-party servers",
+    ),
+]
 
 
 def _announce_labels(file: Path, pages: str, physical: bool, password: Optional[str]) -> None:
@@ -283,6 +291,7 @@ def markdown(
             "(or set PDFX_VLM_BASE_URL); key from PDFX_VLM_API_KEY or OPENAI_API_KEY",
         ),
     ] = None,
+    organization: OrgOpt = None,
     jobs: Annotated[
         int, typer.Option("--jobs", help="Concurrent VLM requests for the AI pass")
     ] = 1,
@@ -331,6 +340,7 @@ def markdown(
             ocr=ocr,
             model=model,
             base_url=base_url,
+            organization=organization,
             jobs=jobs,
             dpi=dpi,
             engine=engine.value,
@@ -395,6 +405,7 @@ def validate_vlm_ocr(
             "key from PDFX_VLM_API_KEY or OPENAI_API_KEY",
         ),
     ] = None,
+    organization: OrgOpt = None,
     dpi: Annotated[
         int, typer.Option("--dpi", help="Render resolution for the OCR page images")
     ] = 150,
@@ -411,7 +422,11 @@ def validate_vlm_ocr(
         from pdfx import ocr
 
         result = ocr.validate_ocr(
-            model=model, base_url=base_url, dpi=dpi, poppler_path=poppler_path
+            model=model,
+            base_url=base_url,
+            organization=organization,
+            dpi=dpi,
+            poppler_path=poppler_path,
         )
         _dump(result)
         if result["overall_status"] == "fail":

@@ -232,6 +232,7 @@ class FakeVlm:
 
     def __init__(self):
         self.requests: list[dict] = []
+        self.headers: list[dict] = []  # per-request headers, aligned with requests
         self.queue: list[tuple[int, str]] = []
         self.content = "Refined."
         self.base_url = ""
@@ -251,6 +252,7 @@ def fake_vlm():
             payload = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
             with state._lock:
                 state.requests.append(payload)
+                state.headers.append({k.lower(): v for k, v in self.headers.items()})
             status, content = state.next_response()
             if status != 200:
                 body = json.dumps({"error": {"message": "boom", "type": "bad_request"}})
@@ -291,7 +293,15 @@ def fake_vlm():
 
 @pytest.fixture()
 def vlm_env(monkeypatch):
-    for var in ("PDFX_VLM_MODEL", "PDFX_VLM_BASE_URL", "PDFX_VLM_API_KEY", "OPENAI_API_KEY"):
+    for var in (
+        "PDFX_VLM_MODEL",
+        "PDFX_VLM_BASE_URL",
+        "PDFX_VLM_ORG",
+        "PDFX_VLM_API_KEY",
+        "OPENAI_API_KEY",
+        "OPENAI_ORG_ID",  # SDK's own org fallback; clear so tests are deterministic
+        "OPENAI_ORGANIZATION",
+    ):
         monkeypatch.delenv(var, raising=False)
 
 

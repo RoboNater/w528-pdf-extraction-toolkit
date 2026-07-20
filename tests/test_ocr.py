@@ -72,6 +72,7 @@ def test_missing_key(scanned_pdf, vlm_env):
         transcribe_pages(scanned_pdf, model="fake-vlm")
 
 
+@requires_poppler
 def test_only_scanned_pages_transcribed(scanned_pdf, fake_vlm, vlm_env, tmp_path):
     fake_vlm.content = TRANSCRIPTION
     result = transcribe_pages(
@@ -88,6 +89,28 @@ def test_no_scanned_pages_no_requests(text_pdf, fake_vlm, vlm_env):
     result = transcribe_pages(text_pdf, model="fake-vlm", base_url=fake_vlm.base_url)
     assert result == []
     assert fake_vlm.requests == []  # no render, no API traffic
+
+
+@requires_poppler
+def test_organization_sent_as_header(scanned_pdf, fake_vlm, vlm_env, tmp_path):
+    """End-to-end: --organization / PDFX_VLM_ORG reaches the wire as the
+    OpenAI-Organization header the SDK sets."""
+    fake_vlm.content = TRANSCRIPTION
+    transcribe_pages(
+        scanned_pdf,
+        model="fake-vlm",
+        base_url=fake_vlm.base_url,
+        organization="org-xyz",
+        cache_dir=tmp_path,
+    )
+    assert fake_vlm.headers[0].get("openai-organization") == "org-xyz"
+
+
+@requires_poppler
+def test_no_organization_header_by_default(scanned_pdf, fake_vlm, vlm_env, tmp_path):
+    fake_vlm.content = TRANSCRIPTION
+    transcribe_pages(scanned_pdf, model="fake-vlm", base_url=fake_vlm.base_url, cache_dir=tmp_path)
+    assert "openai-organization" not in fake_vlm.headers[0]
 
 
 @requires_poppler

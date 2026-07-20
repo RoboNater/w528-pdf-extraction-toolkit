@@ -66,6 +66,7 @@ def transcribe_pages(
     pages: PageSpec = "all",
     model: str | None = None,
     base_url: str | None = None,
+    organization: str | None = None,
     jobs: int = 1,
     dpi: int = 150,
     password: str | None = None,
@@ -82,11 +83,12 @@ def transcribe_pages(
     result (extract them with `core.get_text`). A successful transcription has
     `has_text=True`; a failed one (API error, rejected response) keeps
     `has_text=False` with empty text, and a message is appended to `warnings`
-    when a list is passed. Configuration, caching, and concurrency behave
-    exactly like the Markdown AI pass (see `markdown.to_markdown`); rendering
-    the pages requires poppler.
+    when a list is passed. Configuration (model/base_url/organization and the
+    PDFX_VLM_* environment fallbacks), caching, and concurrency behave exactly
+    like the Markdown AI pass (see `markdown.to_markdown`); rendering the pages
+    requires poppler.
     """
-    client, model = make_client(model, base_url, feature="OCR")
+    client, model = make_client(model, base_url, organization, feature="OCR")
     path = Path(path)
     reader = core._open_reader(path, password)
     numbers, labels = core._resolve_pages(reader, pages, physical)
@@ -218,6 +220,7 @@ LAYOUT_THRESHOLD = 70  # layout page tolerates more reflow
 def validate_ocr(
     model: str | None = None,
     base_url: str | None = None,
+    organization: str | None = None,
     dpi: int = 150,
     poppler_path: str | Path | None = None,
 ) -> dict:
@@ -255,6 +258,7 @@ def validate_ocr(
                 "all",
                 model=model,
                 base_url=base_url,
+                organization=organization,
                 dpi=dpi,
                 poppler_path=poppler_path,
                 use_cache=False,

@@ -20,18 +20,26 @@ class VlmError(core.PdfxError):
     """A VLM pass is misconfigured (missing model, key, or openai package)."""
 
 
-def make_client(model: str | None, base_url: str | None, feature: str = "The AI pass"):
+def make_client(
+    model: str | None,
+    base_url: str | None,
+    organization: str | None = None,
+    feature: str = "The AI pass",
+):
     """Resolve VLM configuration and return (OpenAI client, model name).
 
-    model/base_url fall back to PDFX_VLM_MODEL / PDFX_VLM_BASE_URL; the API key
-    comes from PDFX_VLM_API_KEY or OPENAI_API_KEY. With a base_url set, a
-    missing key is allowed (local OpenAI-compatible servers ignore it).
+    model/base_url/organization fall back to PDFX_VLM_MODEL / PDFX_VLM_BASE_URL /
+    PDFX_VLM_ORG; the API key comes from PDFX_VLM_API_KEY or OPENAI_API_KEY. With
+    a base_url set, a missing key is allowed (local OpenAI-compatible servers
+    ignore it). organization is passed through only when set (OpenAI-hosted
+    accounts scoped to an org); it is left unset for local/third-party servers.
     `feature` names the caller in error messages ("The AI pass", "OCR").
     """
     model = model or os.environ.get("PDFX_VLM_MODEL")
     if not model:
         raise VlmError(f"{feature} needs a model: pass model=/--model or set PDFX_VLM_MODEL.")
     base_url = base_url or os.environ.get("PDFX_VLM_BASE_URL")
+    organization = organization or os.environ.get("PDFX_VLM_ORG")
     api_key = os.environ.get("PDFX_VLM_API_KEY") or os.environ.get("OPENAI_API_KEY")
     if not api_key:
         if base_url is None:
@@ -47,7 +55,7 @@ def make_client(model: str | None, base_url: str | None, feature: str = "The AI 
             f"{feature} requires the 'openai' package; install the optional ai "
             "dependencies with 'uv sync --extra ai' or 'pip install pdfx[ai]'."
         ) from exc
-    return OpenAI(api_key=api_key, base_url=base_url), model
+    return OpenAI(api_key=api_key, base_url=base_url, organization=organization), model
 
 
 _FENCE = re.compile(r"\A```[\w-]*\n(.*)\n```\Z", re.DOTALL)
