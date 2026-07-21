@@ -79,6 +79,22 @@ class SearchHit(BaseModel):
     after: str  # context following the match
 
 
+class MarkdownPage(BaseModel):
+    physical_page: int
+    labeled_page: str | None = None
+    markdown: str  # page body only; the joined document adds provenance delimiters
+    has_text: bool  # False when the page has no text layer, tables, or images
+    ai_refined: bool = False  # True when the AI review pass replaced the draft
+    ocr_transcribed: bool = False  # True when the body came from VLM OCR of a scanned page
+
+
+class MarkdownResult(BaseModel):
+    path: str
+    pages: list[MarkdownPage]
+    markdown: str  # full document: page bodies joined with provenance delimiters
+    warnings: list[str] = Field(default_factory=list)  # per-page AI fallbacks etc.
+
+
 class RenderedPage(BaseModel):
     physical_page: int
     labeled_page: str | None = None

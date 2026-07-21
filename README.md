@@ -1,8 +1,8 @@
 # pdfx
 
 PDF extraction toolkit: a JSON-first Python library and CLI for pulling structured
-information out of PDF files — document index, text, tables, embedded images, and
-page renders.
+information out of PDF files — document index, text, tables, embedded images,
+page renders, and Markdown conversion with optional AI review.
 
 Permissive dependencies only (`pypdf`, `pdfplumber`, `pdf2image`, `typer`, `pydantic`);
 no PyMuPDF/AGPL. The core library is CLI-free so a future MCP server can import it
@@ -48,7 +48,18 @@ uv run pdfx search FILE "query" [--regex]        # find text; hits with page con
 uv run pdfx tables FILE --pages all [--csv DIR]  # tables as JSON, or one CSV per table
 uv run pdfx images FILE --pages all --out DIR    # extract embedded images
 uv run pdfx render FILE --pages 1-3 --out DIR --dpi 200 --format png
+uv run pdfx markdown FILE -o out.md [--images-dir media] [--ai]  # Markdown conversion
 ```
+
+`markdown` converts pages to Markdown (prose, pipe tables, image links, with
+page-provenance comments). `--ai` adds a review pass where a vision-language
+model — any OpenAI-compatible API — checks each page's draft against the
+rendered page image and fixes structure. `--outline-headings` and
+`--outline-context` (with `--ai`) use the PDF's outline to get heading levels
+right on pages extracted mid-document; see
+[docs/usage.md](docs/usage.md#pdfx-markdown--convert-to-markdown) for
+configuration. The AI pass needs
+the optional dependencies: `uv sync --extra ai`.
 
 ## Library
 
@@ -60,6 +71,9 @@ texts = core.get_text("doc.pdf", "1-3")      # list[PageText]
 tables = core.get_tables("doc.pdf", "all")   # list[Table]
 images = core.get_images("doc.pdf", "all", out_dir=None)  # list[ImageInfo]
 rendered = core.render_pages("doc.pdf", "1", "out/", dpi=200)  # list[RenderedPage]
+
+from pdfx.markdown import to_markdown
+result = to_markdown("doc.pdf", images_dir="media")  # MarkdownResult
 ```
 
 Core functions return pydantic models; serialize with `.model_dump_json()`.

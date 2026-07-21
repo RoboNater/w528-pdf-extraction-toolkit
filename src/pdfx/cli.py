@@ -19,6 +19,7 @@ import typer
 from pydantic import BaseModel
 
 from pdfx import core
+from pdfx import markdown as md
 from pdfx.pages import PageSpecError
 
 app = typer.Typer(no_args_is_help=True, add_completion=False)
@@ -62,6 +63,14 @@ EngineOpt = Annotated[
 PopplerPathOpt = Annotated[
     Optional[Path],
     typer.Option("--poppler-path", help="Poppler bin directory if not on PATH"),
+]
+OrgOpt = Annotated[
+    Optional[str],
+    typer.Option(
+        "--organization",
+        help="VLM API organization ID (or set PDFX_VLM_ORG); OpenAI-hosted, "
+        "org-scoped accounts only — leave unset for local/third-party servers",
+    ),
 ]
 
 
@@ -239,6 +248,122 @@ def images(
 
 
 @app.command()
+def markdown(
+    file: FileArg,
+    out: Annotated[
+        Optional[Path],
+        typer.Option("--out", "-o", help="Write Markdown to this file instead of stdout"),
+    ] = None,
+    pages: PagesOpt = "all",
+    images_dir: Annotated[
+        Optional[Path],
+        typer.Option(
+            "--images-dir",
+            help="Extract embedded images here and link them (best placed next to the "
+            "output file; images are skipped entirely when omitted)",
+        ),
+    ] = None,
+    ai: Annotated[
+        bool,
+        typer.Option(
+            "--ai",
+            help="Review each page's draft against its rendered image with a "
+            "vision-language model (OpenAI-compatible API; needs poppler and "
+            "the 'ai' optional dependencies)",
+        ),
+    ] = False,
+    ocr: Annotated[
+        bool,
+        typer.Option(
+            "--ocr",
+            help="Transcribe scanned (no text layer) pages using the VLM (requires --ai)",
+        ),
+    ] = False,
+    model: Annotated[
+        Optional[str],
+        typer.Option("--model", help="VLM model name (or set PDFX_VLM_MODEL)"),
+    ] = None,
+    base_url: Annotated[
+        Optional[str],
+        typer.Option(
+            "--base-url",
+            help="OpenAI-compatible endpoint, e.g. an OpenRouter/Ollama/vLLM URL "
+            "(or set PDFX_VLM_BASE_URL); key from PDFX_VLM_API_KEY or OPENAI_API_KEY",
+        ),
+    ] = None,
+    organization: OrgOpt = None,
+    jobs: Annotated[
+        int, typer.Option("--jobs", help="Concurrent VLM requests for the AI pass")
+    ] = 1,
+    dpi: Annotated[
+        int, typer.Option("--dpi", help="Render resolution for the AI pass page images")
+    ] = 150,
+    engine: EngineOpt = TextEngine.poppler,
+    outline_headings: Annotated[
+        bool,
+        typer.Option(
+            "--outline-headings",
+            help="Promote outline (bookmark) titles found on their pages to Markdown "
+            "headings, leveled by outline depth; no-op without an outline",
+        ),
+    ] = False,
+    outline_context: Annotated[
+        bool,
+        typer.Option(
+            "--outline-context",
+            help="Tell the VLM each page's position in the document outline so heading "
+            "levels match the document hierarchy (requires --ai)",
+        ),
+    ] = False,
+    as_json: Annotated[
+        bool, typer.Option("--json", help="Emit the full MarkdownResult as JSON")
+    ] = False,
+    cache_dir: Annotated[
+        Optional[Path],
+        typer.Option("--cache-dir", help="AI response cache location (default ~/.cache/pdfx)"),
+    ] = None,
+    no_cache: Annotated[
+        bool, typer.Option("--no-cache", help="Skip the AI response cache")
+    ] = False,
+    password: PasswordOpt = None,
+    physical: PhysicalOpt = False,
+    poppler_path: PopplerPathOpt = None,
+) -> None:
+    """Convert pages to Markdown: programmatic extraction, plus --ai review and optional --ocr."""
+    with _errors():
+        _announce_labels(file, pages, physical, password)
+        result = md.to_markdown(
+            file,
+            pages,
+            images_dir=images_dir,
+            ai=ai,
+            ocr=ocr,
+            model=model,
+            base_url=base_url,
+            organization=organization,
+            jobs=jobs,
+            dpi=dpi,
+            engine=engine.value,
+            outline_headings=outline_headings,
+            outline_context=outline_context,
+            password=password,
+            physical=physical,
+            poppler_path=poppler_path,
+            cache_dir=cache_dir,
+            use_cache=not no_cache,
+        )
+        for warning in result.warnings:
+            print(warning, file=sys.stderr)
+        if as_json:
+            _dump(result)
+        elif out is not None:
+            out.write_text(result.markdown, encoding="utf-8")
+            print(f"Wrote {out}", file=sys.stderr)
+        else:
+            print(result.markdown, end="")
+
+
+@app.command()
 def render(
     file: FileArg,
     out: Annotated[Path, typer.Option("--out", help="Output directory for rendered images")],
@@ -264,6 +389,48 @@ def render(
                 physical=physical,
             )
         )
+
+
+@app.command()
+def validate_vlm_ocr(
+    model: Annotated[
+        Optional[str],
+        typer.Option("--model", help="VLM model name (or set PDFX_VLM_MODEL)"),
+    ] = None,
+    base_url: Annotated[
+        Optional[str],
+        typer.Option(
+            "--base-url",
+            help="OpenAI-compatible endpoint URL (or set PDFX_VLM_BASE_URL); "
+            "key from PDFX_VLM_API_KEY or OPENAI_API_KEY",
+        ),
+    ] = None,
+    organization: OrgOpt = None,
+    dpi: Annotated[
+        int, typer.Option("--dpi", help="Render resolution for the OCR page images")
+    ] = 150,
+    poppler_path: PopplerPathOpt = None,
+) -> None:
+    """Check your VLM OCR setup by transcribing a synthetic scanned PDF.
+
+    Generates a three-page PDF (page 1 with a text layer, pages 2-3 image-only),
+    runs the real OCR path against the configured model, and scores the
+    transcriptions against the known text. Exits nonzero if OCR produced
+    nothing; 'warn' statuses report low similarity but still exit zero.
+    """
+    with _errors():
+        from pdfx import ocr
+
+        result = ocr.validate_ocr(
+            model=model,
+            base_url=base_url,
+            organization=organization,
+            dpi=dpi,
+            poppler_path=poppler_path,
+        )
+        _dump(result)
+        if result["overall_status"] == "fail":
+            raise typer.Exit(1)
 
 
 if __name__ == "__main__":
