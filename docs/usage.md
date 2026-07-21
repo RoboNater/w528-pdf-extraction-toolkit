@@ -56,7 +56,8 @@ a per-page summary:
 }
 ```
 
-`has_text: false` usually means a scanned/image-only page (OCR is out of scope for v1).
+`has_text: false` usually means a scanned/image-only page. Such pages can be
+transcribed using OCR (see `pdfx markdown --ocr` below).
 When the document defines page labels, `has_page_labels` is `true` and each page
 summary includes its `label` — handy for seeing how labels map to physical positions.
 
@@ -134,9 +135,10 @@ uv run pdfx markdown report.pdf -o report.md           # write a file
 uv run pdfx markdown report.pdf -o report.md --images-dir media
 uv run pdfx markdown report.pdf --json                 # full MarkdownResult as JSON
 uv run pdfx markdown report.pdf -o report.md --ai --model gpt-4o-mini
+uv run pdfx markdown report.pdf --ai --ocr --model gpt-4o-mini  # with OCR for scanned pages
 ```
 
-Converts pages to Markdown in two stages.
+Converts pages to Markdown in up to three stages.
 
 **Stage 1 (always runs)** assembles each page programmatically: prose text via
 the same engines as `pdfx text` (`--engine`, default poppler), tables as
@@ -156,6 +158,18 @@ prevents hallucinated "corrections" to numbers and names. Responses are
 validated (code fences stripped, suspiciously short output rejected); any
 per-page failure keeps the programmatic draft, sets `ai_refined: false`, and
 prints a warning to stderr.
+
+**Stage 3 (`--ai --ocr`)** transcribes pages without a text layer using the
+same VLM. Scanned pages are rendered and sent for OCR with a
+transcription-focused prompt (the image is the only source here, so the model
+is told to transcribe exactly and mark illegible passages rather than guess).
+Successful transcriptions replace the `no text layer` placeholder and set
+`ocr_transcribed: true` on the page in JSON output; failures keep the
+placeholder and print a warning to stderr. Configuration, response validation,
+and the response cache are shared with Stage 2, and each stage only renders
+its own pages (refinement renders pages with text, OCR renders pages
+without). Run `pdfx validate-vlm-ocr` first to check that your model handles
+OCR well.
 
 **Outline-aware headings (opt-in).** Heading levels are otherwise page-local:
 stage 1 emits no headings, and the AI pass judges levels from the single page
@@ -182,6 +196,9 @@ Configuration:
 - `--base-url` or `PDFX_VLM_BASE_URL` — the endpoint; omit for OpenAI itself.
 - API key from `PDFX_VLM_API_KEY`, falling back to `OPENAI_API_KEY`. With a
   `--base-url` set, a missing key is allowed (local servers ignore it).
+- `--organization` or `PDFX_VLM_ORG` — API organization ID, sent only when set.
+  For OpenAI-hosted accounts scoped to a specific org; leave unset for
+  local/third-party servers.
 - `--jobs N` runs N VLM requests concurrently; `--dpi` sets the review image
   resolution (default 150).
 - Accepted responses are cached (default `~/.cache/pdfx`, `--cache-dir` or
@@ -191,6 +208,47 @@ Configuration:
 
 The AI pass requires poppler (page rendering) and the optional `ai` dependency
 group: `uv sync --extra ai` (or `pip install pdfx[ai]`).
+
+### `pdfx validate-vlm-ocr` — test your OCR setup
+
+```sh
+uv run pdfx validate-vlm-ocr --model gpt-4o-mini
+uv run pdfx validate-vlm-ocr --model qwen2.5-vl --base-url http://localhost:11434/v1
+```
+
+Checks that your VLM configuration can actually OCR before you spend money on
+a real document. The command generates a three-page synthetic PDF — page 1
+with a normal text layer (OCR must skip it), pages 2 and 3 with known text
+present only as embedded images (prose with digits and punctuation, then a
+heading/bullets/table layout) — runs the real OCR path against your model,
+and scores each transcription against the known text:
+
+```json
+{
+  "model": "gpt-4o-mini",
+  "dpi": 150,
+  "pages": [
+    { "physical_page": 1, "status": "skipped",
+      "detail": "has a text layer; OCR correctly not attempted" },
+    { "physical_page": 2, "status": "ok", "similarity": 98.7, "threshold": 80,
+      "expected_chars": 228, "transcribed_chars": 226,
+      "detail": "transcription of the prose page" },
+    { "physical_page": 3, "status": "ok", "similarity": 91.2, "threshold": 70,
+      "expected_chars": 141, "transcribed_chars": 149,
+      "detail": "transcription of the bullets and table page" }
+  ],
+  "warnings": [],
+  "overall_status": "pass"
+}
+```
+
+`similarity` is a whitespace-insensitive percentage against the expected text.
+Scores below the per-page threshold report `warn` (the model may struggle with
+your documents); a page with no transcription at all reports `fail`, and the
+command then exits nonzero. Uses the same model/endpoint/key configuration as
+`pdfx markdown --ai` and requires poppler plus the `ai` optional dependencies;
+the synthetic PDF is generated with reportlab (a dev dependency of this repo —
+`uv sync` installs it).
 
 ### `pdfx render` — rasterize pages
 
@@ -271,10 +329,24 @@ from pdfx.markdown import to_markdown
 
 result = to_markdown("report.pdf", images_dir="media")        # stage 1 only
 result = to_markdown("report.pdf", ai=True, model="gpt-4o-mini", jobs=4)
+result = to_markdown("report.pdf", ai=True, ocr=True, model="gpt-4o-mini")  # with OCR
+# model/base_url/organization also fall back to PDFX_VLM_MODEL/PDFX_VLM_BASE_URL/PDFX_VLM_ORG
+result = to_markdown("report.pdf", ai=True, model="gpt-4o", organization="org-abc123")
 print(result.markdown)                                        # joined document
 for page in result.pages:                                     # per-page bodies
-    print(page.physical_page, page.ai_refined, page.markdown[:60])
-print(result.warnings)                                        # AI fallbacks, if any
+    print(page.physical_page, page.ai_refined, page.ocr_transcribed, page.markdown[:60])
+print(result.warnings)                                        # AI/OCR fallbacks, if any
+
+# Standalone OCR of scanned pages (pdfx.ocr, requires the ai dependencies).
+# Returns one PageText per page *without* a text layer; pages that already
+# have text are skipped (use core.get_text for those).
+from pdfx.ocr import transcribe_pages
+
+warnings: list[str] = []
+for page in transcribe_pages("scanned.pdf", model="gpt-4o-mini", warnings=warnings):
+    if page.has_text:
+        print(f"page {page.physical_page}: {len(page.text)} chars transcribed")
+print(warnings)                                               # per-page OCR failures
 ```
 
 Errors raise `FileNotFoundError`, `pdfx.PageSpecError`, or subclasses of
@@ -284,9 +356,10 @@ Errors raise `FileNotFoundError`, `pdfx.PageSpecError`, or subclasses of
 
 `pdfx text` and `pdfx search` shell out to poppler's `pdftotext` by default,
 and `pdfx render` shells out to poppler via pdf2image; `pdfx markdown` uses
-`pdftotext` for pages without tables and rendering for its `--ai` pass.
-`index`, `tables`, and `images` work without poppler, as do `text`/`search`/
-`markdown` with `--engine pypdf` or `--engine pdfplumber`.
+`pdftotext` for pages without tables and page rendering for its `--ai` and
+`--ocr` passes, and `pdfx validate-vlm-ocr` renders its test pages the same
+way. `index`, `tables`, and `images` work without poppler, as do
+`text`/`search`/`markdown` with `--engine pypdf` or `--engine pdfplumber`.
 
 - Linux: `apt install poppler-utils`
 - macOS: `brew install poppler`

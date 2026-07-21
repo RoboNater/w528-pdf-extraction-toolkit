@@ -2,8 +2,9 @@
 
 Plan for the next phases of pdfx development. Each phase lands on its own
 feature branch, fully tested and documented, before the next begins. Version
-bumps: 0.2.0 after Phase 1, 0.3.0 after Phase 2, 0.4.0 after Phase 3, 0.5.0
-after Phase 4, 0.6.0 after Phase 5.
+bumps: 0.2.0 after Phase 1, 0.3.0 after Phase 2, 0.4.0 after Phase 3 (OCR),
+0.5.0 after Phase 4 (quality of life), 0.6.0 after Phase 5 (RAG), 0.7.0 after
+Phase 6 (MCP).
 
 ## Phase 1 — Search ✅ (shipped in 0.2.0)
 
@@ -102,7 +103,8 @@ def to_markdown(path, pages="all", images_dir=None, ai=False, model=None,
 - The `openai` client lives in an optional dependency group (`uv sync --extra
   ai`); the base install stays light and stage 1 never imports it.
 - No-text-layer pages are **not** sent for transcription — that would be OCR
-  through the back door (see out of scope). They keep their placeholder.
+  through the back door (out of scope at the time). They keep their
+  placeholder. (Phase 3 later added exactly this, deliberately, via `--ocr`.)
 
 **CLI:**
 
@@ -127,7 +129,7 @@ run served from cache.
 
 **Later, not in this phase:** a `--describe-images` flag (vector charts and
 figures don't come out via `get_images`; the VLM could write alt text), and
-feeding this output into Phase 4 — markdown with page delimiters is a better
+feeding this output into Phase 5 — markdown with page delimiters is a better
 chunking input than raw text, so `chunk_document` may eventually consume it.
 
 **Post-ship additions (0.3.x, opt-in pending evaluation):** heading levels are
@@ -139,29 +141,82 @@ AI pass assigns levels matching the document hierarchy. Both are no-ops on
 documents without an outline. **Open decision:** evaluate on real documents,
 then promote one or both to default-on.
 
-## Phase 3 — Quality of life
+## Phase 3 — OCR for scanned pages (in progress)
+
+The line the "out of scope" note said Phase 2 would make nearly free, now
+crossed deliberately: the VLM that reviews pages also transcribes the scanned
+ones. VLM-only — no tesseract or other local OCR engine, so there are no new
+dependencies and one set of configuration, validation, and cost controls.
+
+**Core** (`ocr.py`, sharing client/cache plumbing with `markdown.py` via
+`vlm_utils.py`):
+
+```python
+def transcribe_pages(path, pages="all", model=None, base_url=None, jobs=1,
+                     dpi=150, password=None, physical=False, poppler_path=None,
+                     cache_dir=None, use_cache=True, warnings=None) -> list[PageText]
+```
+
+- Only pages without a text layer are rendered and sent; one `PageText` per
+  scanned page comes back (`has_text=True` on success, `False` with empty text
+  on failure — failures append to `warnings` and never raise).
+- The prompt inverts the Phase 2 ground-truth rule: there is no draft, so the
+  image is the only source and the model transcribes exactly, marking
+  `[illegible]` rather than guessing. Responses are validated (fence stripped,
+  too-short responses rejected as likely refusals) and cached under an
+  OCR-specific key (file hash + page + model + prompt version + dpi).
+
+**`pdfx markdown --ocr`** (requires `--ai`): a third stage after refinement
+replaces `no text layer` placeholders with transcriptions and marks those pages
+`ocr_transcribed: true`; failed pages keep their placeholder.
+
+**`pdfx validate-vlm-ocr`**: generates a three-page synthetic PDF — page 1 with
+a text layer (must be skipped), pages 2-3 with text present only as embedded
+images — runs the real OCR path against the configured model, and scores the
+transcriptions against the known text (whitespace-insensitive similarity, with
+ok/warn thresholds). Lets a user prove their model/endpoint works before
+spending money on a real document.
+
+**Shared VLM config** (`vlm_utils.make_client`, used by both the AI pass and
+OCR): `--model`/`--base-url`/`--organization` with `PDFX_VLM_MODEL` /
+`PDFX_VLM_BASE_URL` / `PDFX_VLM_ORG` env fallbacks, key from `PDFX_VLM_API_KEY`
+→ `OPENAI_API_KEY`. `--organization` is passed to the client only when set
+(OpenAI-hosted, org-scoped accounts); local/third-party servers leave it unset.
+A config file for these defaults is tracked separately (see issues).
+
+**Tests:** against the faked OpenAI-compatible endpoint from Phase 2 — scanned
+pages transcribed and text-layer pages skipped (no API traffic), request
+carries the page image, failure/short-response fallback with warnings, cache
+hits on the second run, `--ocr` placeholder replacement and `--ocr` without
+`--ai` rejected, validation PDF has the right text-layer shape, validate
+pass/warn/fail paths, and config resolution including organization (arg/env
+precedence and the org reaching the wire as a header).
+
+See `dev-notes/phase-3-ocr-vlm.md` for the full design.
+
+## Phase 4 — Quality of life
 
 Three independent, small items.
 
-**3a. `index` performance flag.** `get_index` currently extracts text from every
+**4a. `index` performance flag.** `get_index` currently extracts text from every
 page to compute `has_text` — the slowest part of indexing a large ebook. Add
 `check_text: bool = True` to `core.get_index` and `--no-text-check` to the CLI;
 when disabled, `has_text` is `null` in output (model field becomes
 `bool | None`). Index of a several-hundred-page PDF becomes near-instant.
 
-**3b. Form fields.** `core.get_fields(path, password) -> list[FormField]` via
+**4b. Form fields.** `core.get_fields(path, password) -> list[FormField]` via
 pypdf `reader.get_fields()`; model: `name`, `field_type` (text/checkbox/radio/
 choice/signature), `value`, `default_value`. New CLI command `pdfx fields FILE`.
 Documents without forms return `[]`. Fixture: generate a simple AcroForm with
 pypdf in conftest.
 
-**3c. CI.** GitHub Actions workflow: matrix of ubuntu-latest + windows-latest,
+**4c. CI.** GitHub Actions workflow: matrix of ubuntu-latest + windows-latest,
 steps = install uv (`astral-sh/setup-uv`), `uv sync`, `ruff check` +
 `ruff format --check`, `uv run pytest`. Ubuntu installs `poppler-utils` so
 render tests run; Windows skips them (already automatic). Requires the repo to
 be on GitHub — skip this item if it stays on a local remote.
 
-## Phase 4 — RAG: chunking and vector store
+## Phase 5 — RAG: chunking and vector store
 
 Make a PDF semantically queryable: chunk → embed → store → query, with page
 provenance carried through so answers can cite labeled pages.
@@ -194,7 +249,7 @@ def chunk_document(path, pages="all", target_chars=1200, overlap_chars=150,
   Alternative considered: LanceDB — also fine; chroma chosen for the simplest
   embedded API and built-in default embedding.
 - **Embeddings: pluggable from day one**, selected via `--embedder` (env
-  `PDFX_EMBEDDER`). Two implementations ship in Phase 4:
+  `PDFX_EMBEDDER`). Two implementations ship in Phase 5:
   - `local` (default): chroma's built-in ONNX MiniLM — downloads once, no
     torch, no API key.
   - `voyage` (API-based, higher quality): reads `VOYAGE_API_KEY`; errors
@@ -223,7 +278,7 @@ paragraph preservation. Store tests inject a deterministic dummy embedding
 function (no model download in CI); one optional integration test runs the real
 default embedder when the model is available locally.
 
-## Phase 5 — MCP server
+## Phase 6 — MCP server
 
 The spec's v2 goal: expose the same core to agents via MCP.
 
@@ -240,10 +295,10 @@ The spec's v2 goal: expose the same core to agents via MCP.
   permitted paths.
 - Tests: in-process client via the SDK's test transport; no subprocess needed.
 
-## Out of scope (unchanged)
+## Out of scope
 
-OCR for scanned pages, PDF modification/creation — revisit only when a real
-document needs them. Note: the Phase 2 AI pass makes OCR nearly free (a VLM
-that reviews pages can also transcribe scanned ones), so Phase 2 is the natural
-moment to revisit that line deliberately — but it stays out of scope until a
-real document forces the decision.
+PDF modification/creation — revisit only when a real document needs it. OCR
+was originally on this list; the Phase 2 AI pass made it nearly free (a VLM
+that reviews pages can also transcribe scanned ones), and Phase 3 brought it
+into scope on exactly those terms — VLM-based only. Local OCR engines
+(tesseract etc.) remain out of scope.

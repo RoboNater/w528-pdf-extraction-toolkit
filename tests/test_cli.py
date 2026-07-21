@@ -197,3 +197,15 @@ def test_render(text_pdf, tmp_path):
     data = json.loads(result.stdout)
     assert data[0]["physical_page"] == 1
     assert data[0]["dpi"] == 72
+
+
+def test_markdown_ocr_requires_ai_flag(table_pdf):
+    result = run_cli("markdown", table_pdf, "--ocr")
+    assert result.returncode == 1
+    assert "--ai" in json.loads(result.stdout)["error"]
+
+
+def test_validate_vlm_ocr_config_error():
+    result = run_cli("validate-vlm-ocr")
+    assert result.returncode == 1
+    assert "model" in json.loads(result.stdout)["error"]

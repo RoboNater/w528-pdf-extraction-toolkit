@@ -87,7 +87,8 @@ Conventions:
 - Page numbers out of range → error listing the valid range
 - `pdf2image` missing poppler → detect and report install hint (`apt install poppler-utils`)
 - Pages with no extractable text (scanned) → return empty text with `has_text: false`,
-  not an error (OCR is out of scope for v1)
+  not an error (VLM-based OCR for such pages was added later; see "OCR for Scanned
+  Pages" below)
 
 ## Testing
 
@@ -99,10 +100,32 @@ Conventions:
 
 ## Out of Scope (v1)
 
-- OCR of scanned pages
 - Form field extraction
 - PDF modification/creation
 - MCP server (v2 — but keep core importable and CLI-free to enable it)
+- Local OCR engines (tesseract etc.) — VLM-based OCR was brought into scope
+  post-v1; see below
+
+## OCR for Scanned Pages (added post-v1, roadmap Phase 3)
+
+Originally out of scope for v1; brought into scope once the Markdown AI pass
+(roadmap Phase 2) supplied the vision-language-model infrastructure — a VLM
+that reviews pages can also transcribe scanned ones. VLM-based only: no local
+OCR engine, no new dependencies, same OpenAI-compatible configuration,
+validation, caching, and cost controls as the AI pass.
+
+```sh
+pdfx markdown FILE --ai --ocr [--model NAME] [--base-url URL] ...
+pdfx validate-vlm-ocr [--model NAME] [--base-url URL] [--dpi N]
+```
+
+`--ocr` requires `--ai` and transcribes pages that have no text layer, in
+place of their `no text layer` placeholders. `validate-vlm-ocr` generates a
+synthetic PDF whose pages 2-3 carry text only as embedded images, OCRs it with
+the configured model, and scores the transcriptions against the known text so
+users can verify their setup before running on a real document. Library
+entry point: `pdfx.ocr.transcribe_pages`. Design notes:
+`dev-notes/phase-3-ocr-vlm.md`.
 
 ---
 

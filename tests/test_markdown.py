@@ -1,15 +1,12 @@
 """Markdown conversion tests.
 
-Stage 2 tests run against a fake OpenAI-compatible endpoint served from a local
-thread — no network, no real API key. They render pages, so they require
-poppler like the render tests.
+Stage 2 tests run against a fake OpenAI-compatible endpoint (the fake_vlm
+fixture in conftest) served from a local thread — no network, no real API key.
+They render pages, so they require poppler like the render tests.
 """
 
 from __future__ import annotations
 
-import json
-import threading
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
@@ -185,75 +182,6 @@ def test_heading_match_is_conservative():
 
 
 # --- stage 2: AI review pass against a fake OpenAI-compatible endpoint ---
-
-
-class FakeVlm:
-    """Records chat.completions requests; serves queued (status, content)
-    responses, then the default content."""
-
-    def __init__(self):
-        self.requests: list[dict] = []
-        self.queue: list[tuple[int, str]] = []
-        self.content = "Refined."
-        self.base_url = ""
-        self._lock = threading.Lock()
-
-    def next_response(self) -> tuple[int, str]:
-        with self._lock:
-            return self.queue.pop(0) if self.queue else (200, self.content)
-
-
-@pytest.fixture()
-def fake_vlm():
-    state = FakeVlm()
-
-    class Handler(BaseHTTPRequestHandler):
-        def do_POST(self):
-            payload = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
-            with state._lock:
-                state.requests.append(payload)
-            status, content = state.next_response()
-            if status != 200:
-                body = json.dumps({"error": {"message": "boom", "type": "bad_request"}})
-            else:
-                body = json.dumps(
-                    {
-                        "id": "chatcmpl-test",
-                        "object": "chat.completion",
-                        "created": 0,
-                        "model": payload.get("model", "fake"),
-                        "choices": [
-                            {
-                                "index": 0,
-                                "finish_reason": "stop",
-                                "message": {"role": "assistant", "content": content},
-                            }
-                        ],
-                    }
-                )
-            data = body.encode()
-            self.send_response(status)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(data)))
-            self.end_headers()
-            self.wfile.write(data)
-
-        def log_message(self, *args):
-            pass
-
-    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-    state.base_url = f"http://127.0.0.1:{server.server_address[1]}/v1"
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    yield state
-    server.shutdown()
-    thread.join()
-
-
-@pytest.fixture()
-def vlm_env(monkeypatch):
-    for var in ("PDFX_VLM_MODEL", "PDFX_VLM_BASE_URL", "PDFX_VLM_API_KEY", "OPENAI_API_KEY"):
-        monkeypatch.delenv(var, raising=False)
 
 
 @requires_poppler

@@ -17,8 +17,6 @@ from __future__ import annotations
 
 import base64
 import hashlib
-import json
-import os
 import re
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
@@ -29,6 +27,15 @@ import pdfplumber
 from pdfx import core
 from pdfx.models import ImageInfo, MarkdownPage, MarkdownResult
 from pdfx.pages import PageSpec
+from pdfx.vlm_utils import (
+    VlmError,
+    cache_path,
+    cache_read,
+    cache_write,
+    file_sha256,
+    make_client,
+    strip_code_fence,
+)
 
 # Bumped whenever the system prompt or request shape changes, so cached
 # responses from an older prompt are not reused.
@@ -50,17 +57,15 @@ Keep image links exactly as they appear in the draft.
 Return only the corrected Markdown for the page — no commentary, no code fences."""
 
 
-class VlmError(core.PdfxError):
-    """The AI pass is misconfigured (missing model, key, or openai package)."""
-
-
 def to_markdown(
     path: Path,
     pages: PageSpec = "all",
     images_dir: Path | None = None,
     ai: bool = False,
+    ocr: bool = False,
     model: str | None = None,
     base_url: str | None = None,
+    organization: str | None = None,
     jobs: int = 1,
     dpi: int = 150,
     engine: core.TextEngine = "poppler",
@@ -79,13 +84,22 @@ def to_markdown(
     given — embedded images extracted there and referenced with links relative
     to images_dir's parent (put images_dir next to your output file).
 
-    ai=True adds the VLM review pass: model/base_url come from the arguments or
-    the PDFX_VLM_MODEL / PDFX_VLM_BASE_URL environment variables, the API key
-    from PDFX_VLM_API_KEY or OPENAI_API_KEY. Requires poppler (page rendering)
+    ai=True adds the VLM review pass: model/base_url/organization come from the
+    arguments or the PDFX_VLM_MODEL / PDFX_VLM_BASE_URL / PDFX_VLM_ORG
+    environment variables, the API key from PDFX_VLM_API_KEY or OPENAI_API_KEY.
+    organization is only sent when set (OpenAI-hosted, org-scoped accounts).
+    Requires poppler (page rendering)
     and the optional `ai` dependency group. Accepted responses are cached under
     cache_dir (default ~/.cache/pdfx/vlm, override with PDFX_CACHE_DIR) keyed
     on file hash + page + model + prompt version + dpi + outline context, so
     interrupted runs resume without re-billing.
+
+    ocr=True (requires ai=True) adds a third stage: pages without a text layer
+    are rendered and sent to the VLM for OCR transcription (pdfx.ocr), with the
+    same configuration, validation, and response cache as the AI pass.
+    Successful transcriptions replace the no-text placeholder and set
+    ocr_transcribed=True on the page; failures keep the placeholder and append
+    to warnings.
 
     Heading levels are otherwise page-local; two opt-in options anchor them to
     the document's outline (PDF bookmarks), and both are no-ops on documents
@@ -97,6 +111,8 @@ def to_markdown(
     """
     if outline_context and not ai:
         raise VlmError("outline_context requires the AI pass (--outline-context needs --ai).")
+    if ocr and not ai:
+        raise VlmError("OCR requires the AI pass (--ocr needs --ai).")
     path = Path(path)
     reader = core._open_reader(path, password)
     numbers, labels = core._resolve_pages(reader, pages, physical)
@@ -159,6 +175,7 @@ def to_markdown(
             [p for p in result_pages if p.has_text],
             model=model,
             base_url=base_url,
+            organization=organization,
             jobs=jobs,
             dpi=dpi,
             password=password,
@@ -168,6 +185,38 @@ def to_markdown(
             warnings=warnings,
             contexts=contexts,
         )
+
+        no_text = [p for p in result_pages if not p.has_text]
+        if ocr and no_text:
+            # Stage 3: OCR pages without a text layer. Function-level import:
+            # the `ocr` parameter shadows the module name in this scope.
+            from pdfx.ocr import transcribe_pages
+
+            transcribed = {
+                r.physical_page: r
+                for r in transcribe_pages(
+                    path,
+                    ",".join(str(p.physical_page) for p in no_text),
+                    model=model,
+                    base_url=base_url,
+                    organization=organization,
+                    jobs=jobs,
+                    dpi=dpi,
+                    password=password,
+                    physical=True,
+                    poppler_path=poppler_path,
+                    cache_dir=cache_dir,
+                    use_cache=use_cache,
+                    warnings=warnings,
+                )
+            }
+            for page in result_pages:
+                hit = transcribed.get(page.physical_page)
+                if hit is not None and hit.has_text:
+                    # Replace the no-text placeholder with the transcription.
+                    page.markdown = hit.text
+                    page.has_text = True
+                    page.ocr_transcribed = True
 
     return MarkdownResult(
         path=str(path),
@@ -338,6 +387,7 @@ def _refine_pages(
     pages: list[MarkdownPage],
     model: str | None,
     base_url: str | None,
+    organization: str | None,
     jobs: int,
     dpi: int,
     password: str | None,
@@ -349,31 +399,11 @@ def _refine_pages(
 ) -> None:
     """Review each page's draft against its rendered image; mutate accepted
     pages in place. Every failure path keeps the draft and appends a warning."""
-    model = model or os.environ.get("PDFX_VLM_MODEL")
-    if not model:
-        raise VlmError("The AI pass needs a model: pass model=/--model or set PDFX_VLM_MODEL.")
-    base_url = base_url or os.environ.get("PDFX_VLM_BASE_URL")
-    api_key = os.environ.get("PDFX_VLM_API_KEY") or os.environ.get("OPENAI_API_KEY")
-    if not api_key:
-        if base_url is None:
-            raise VlmError(
-                "The AI pass needs an API key: set PDFX_VLM_API_KEY (or OPENAI_API_KEY). "
-                "Local servers that skip auth also need --base-url/PDFX_VLM_BASE_URL."
-            )
-        api_key = "unused"  # local OpenAI-compatible servers ignore the key
-    try:
-        from openai import OpenAI
-    except ImportError as exc:
-        raise VlmError(
-            "The AI pass requires the 'openai' package; install the optional ai "
-            "dependencies with 'uv sync --extra ai' or 'pip install pdfx[ai]'."
-        ) from exc
-
+    client, model = make_client(model, base_url, organization)
     if not pages:
         return
-    client = OpenAI(api_key=api_key, base_url=base_url)
-    file_hash = _file_sha256(path)
-    cache = _cache_path(cache_dir) if use_cache else None
+    file_hash = file_sha256(path)
+    cache = cache_path(cache_dir) if use_cache else None
 
     with tempfile.TemporaryDirectory(prefix="pdfx-vlm-") as tmp:
         spec = ",".join(str(p.physical_page) for p in pages)
@@ -397,7 +427,7 @@ def _refine_pages(
                 f"{file_hash}:{n}:{model}:{PROMPT_VERSION}:{dpi}:{context}".encode()
             ).hexdigest()
             if cache is not None:
-                hit = _cache_read(cache, key)
+                hit = cache_read(cache, key)
                 if hit is not None:
                     page.markdown, page.ai_refined = hit, True
                     return None
@@ -410,7 +440,7 @@ def _refine_pages(
                 return f"page {n}: AI response rejected ({reason}); kept programmatic draft"
             page.markdown, page.ai_refined = accepted, True
             if cache is not None:
-                _cache_write(cache, key, accepted)
+                cache_write(cache, key, accepted, PROMPT_VERSION)
             return None
 
         with ThreadPoolExecutor(max_workers=max(1, jobs)) as pool:
@@ -441,51 +471,13 @@ def _call_vlm(client, model: str, draft: str, image_path: Path, context: str = "
     return completion.choices[0].message.content
 
 
-_FENCE = re.compile(r"\A```[\w-]*\n(.*)\n```\Z", re.DOTALL)
-
-
 def _accept_response(draft: str, response: str | None) -> tuple[str | None, str]:
     """Validate a VLM response; (accepted_markdown, "") or (None, reason)."""
     if response is None:
         return None, "empty response"
-    text = response.strip()
-    fenced = _FENCE.match(text)
-    if fenced:
-        text = fenced.group(1).strip()
+    text = strip_code_fence(response.strip())
     if not text:
         return None, "empty response"
     if len(draft) >= 200 and len(text) < len(draft) // 2:
         return None, f"response suspiciously short ({len(text)} vs draft {len(draft)} chars)"
     return text, ""
-
-
-def _file_sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(1 << 20), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def _cache_path(cache_dir: Path | None) -> Path:
-    if cache_dir is None:
-        base = os.environ.get("PDFX_CACHE_DIR")
-        cache_dir = Path(base) if base else Path.home() / ".cache" / "pdfx"
-    return Path(cache_dir) / "vlm"
-
-
-def _cache_read(cache: Path, key: str) -> str | None:
-    target = cache / f"{key}.json"
-    try:
-        return json.loads(target.read_text(encoding="utf-8"))["markdown"]
-    except (OSError, ValueError, KeyError):
-        return None
-
-
-def _cache_write(cache: Path, key: str, markdown: str) -> None:
-    try:
-        cache.mkdir(parents=True, exist_ok=True)
-        payload = {"markdown": markdown, "prompt_version": PROMPT_VERSION}
-        (cache / f"{key}.json").write_text(json.dumps(payload), encoding="utf-8")
-    except OSError:
-        pass  # cache is best-effort; never fail the conversion over it

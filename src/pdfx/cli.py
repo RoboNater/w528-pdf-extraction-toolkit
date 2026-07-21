@@ -64,6 +64,14 @@ PopplerPathOpt = Annotated[
     Optional[Path],
     typer.Option("--poppler-path", help="Poppler bin directory if not on PATH"),
 ]
+OrgOpt = Annotated[
+    Optional[str],
+    typer.Option(
+        "--organization",
+        help="VLM API organization ID (or set PDFX_VLM_ORG); OpenAI-hosted, "
+        "org-scoped accounts only — leave unset for local/third-party servers",
+    ),
+]
 
 
 def _announce_labels(file: Path, pages: str, physical: bool, password: Optional[str]) -> None:
@@ -264,6 +272,13 @@ def markdown(
             "the 'ai' optional dependencies)",
         ),
     ] = False,
+    ocr: Annotated[
+        bool,
+        typer.Option(
+            "--ocr",
+            help="Transcribe scanned (no text layer) pages using the VLM (requires --ai)",
+        ),
+    ] = False,
     model: Annotated[
         Optional[str],
         typer.Option("--model", help="VLM model name (or set PDFX_VLM_MODEL)"),
@@ -276,6 +291,7 @@ def markdown(
             "(or set PDFX_VLM_BASE_URL); key from PDFX_VLM_API_KEY or OPENAI_API_KEY",
         ),
     ] = None,
+    organization: OrgOpt = None,
     jobs: Annotated[
         int, typer.Option("--jobs", help="Concurrent VLM requests for the AI pass")
     ] = 1,
@@ -313,7 +329,7 @@ def markdown(
     physical: PhysicalOpt = False,
     poppler_path: PopplerPathOpt = None,
 ) -> None:
-    """Convert pages to Markdown: programmatic extraction, plus --ai review."""
+    """Convert pages to Markdown: programmatic extraction, plus --ai review and optional --ocr."""
     with _errors():
         _announce_labels(file, pages, physical, password)
         result = md.to_markdown(
@@ -321,8 +337,10 @@ def markdown(
             pages,
             images_dir=images_dir,
             ai=ai,
+            ocr=ocr,
             model=model,
             base_url=base_url,
+            organization=organization,
             jobs=jobs,
             dpi=dpi,
             engine=engine.value,
@@ -371,6 +389,48 @@ def render(
                 physical=physical,
             )
         )
+
+
+@app.command()
+def validate_vlm_ocr(
+    model: Annotated[
+        Optional[str],
+        typer.Option("--model", help="VLM model name (or set PDFX_VLM_MODEL)"),
+    ] = None,
+    base_url: Annotated[
+        Optional[str],
+        typer.Option(
+            "--base-url",
+            help="OpenAI-compatible endpoint URL (or set PDFX_VLM_BASE_URL); "
+            "key from PDFX_VLM_API_KEY or OPENAI_API_KEY",
+        ),
+    ] = None,
+    organization: OrgOpt = None,
+    dpi: Annotated[
+        int, typer.Option("--dpi", help="Render resolution for the OCR page images")
+    ] = 150,
+    poppler_path: PopplerPathOpt = None,
+) -> None:
+    """Check your VLM OCR setup by transcribing a synthetic scanned PDF.
+
+    Generates a three-page PDF (page 1 with a text layer, pages 2-3 image-only),
+    runs the real OCR path against the configured model, and scores the
+    transcriptions against the known text. Exits nonzero if OCR produced
+    nothing; 'warn' statuses report low similarity but still exit zero.
+    """
+    with _errors():
+        from pdfx import ocr
+
+        result = ocr.validate_ocr(
+            model=model,
+            base_url=base_url,
+            organization=organization,
+            dpi=dpi,
+            poppler_path=poppler_path,
+        )
+        _dump(result)
+        if result["overall_status"] == "fail":
+            raise typer.Exit(1)
 
 
 if __name__ == "__main__":
