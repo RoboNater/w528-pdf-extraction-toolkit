@@ -61,6 +61,47 @@ right on pages extracted mid-document; see
 configuration. The AI pass needs
 the optional dependencies: `uv sync --extra ai`.
 
+## Configuration file
+
+Any CLI option can be given a persistent default in an optional TOML config
+file, so a bare `pdfx FILE.pdf` (just the PDF path, no subcommand) finds the
+config and runs the action it prescribes:
+
+```toml
+[default]
+command = "markdown"          # what `pdfx FILE.pdf` runs; omit → "index"
+
+[markdown]                    # per-command defaults
+ai = true
+engine = "pypdf"
+outline_headings = true
+
+[text]
+engine = "pypdf"
+layout = true
+
+[vlm]                         # shared VLM settings (model / base_url / ...)
+model = "gpt-4o-mini"
+base_url = "https://openrouter.ai/api/v1"
+organization = "org-abc123"
+cache_dir = "~/.cache/pdfx"
+# the API key is never read from the config file — it stays in the environment
+# (PDFX_VLM_API_KEY / OPENAI_API_KEY).
+```
+
+Every option resolves by precedence **flag → environment variable → config file
+→ built-in default**. Because flags win, boolean options are paired so you can
+turn a config-enabled feature back off on the command line — e.g. `--no-ai`
+overrides `[markdown] ai = true`, and every `--flag` has a matching `--no-flag`.
+VLM keys set in a command section (say `[markdown] model`) override the same key
+in `[vlm]` for that command.
+
+The file is discovered, in order: an explicit `--config PATH` (or `$PDFX_CONFIG`);
+the nearest `pdfx.toml` walking up from the current directory; then
+`~/.config/pdfx/config.toml`. When both a project and a user file are found they
+merge per key with the project file winning. A malformed file reports a clear
+error rather than a traceback.
+
 ## Library
 
 ```python

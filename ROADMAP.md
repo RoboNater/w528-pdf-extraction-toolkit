@@ -182,7 +182,8 @@ OCR): `--model`/`--base-url`/`--organization` with `PDFX_VLM_MODEL` /
 `PDFX_VLM_BASE_URL` / `PDFX_VLM_ORG` env fallbacks, key from `PDFX_VLM_API_KEY`
 → `OPENAI_API_KEY`. `--organization` is passed to the client only when set
 (OpenAI-hosted, org-scoped accounts); local/third-party servers leave it unset.
-A config file for these defaults is tracked separately (see issues).
+These defaults (and every other CLI option) can also live in an optional TOML
+config file — see "Config file" below.
 
 **Tests:** against the faked OpenAI-compatible endpoint from Phase 2 — scanned
 pages transcribed and text-layer pages skipped (no API traffic), request
@@ -193,6 +194,21 @@ pass/warn/fail paths, and config resolution including organization (arg/env
 precedence and the org reaching the wire as a header).
 
 See `dev-notes/phase-3-ocr-vlm.md` for the full design.
+
+## Config file ✅
+
+Optional TOML config (`pdfx.config`) giving any CLI option a persistent default,
+resolved **flag → env var → config file → built-in default**. A `[default]`
+section names the command that a bare `pdfx FILE.pdf` runs (else `index`);
+per-command sections (`[markdown]`, `[text]`, …) plus a shared `[vlm]` section
+hold option defaults, with a command-scoped VLM key overriding `[vlm]`. Because
+flags win, every boolean option is a paired `--flag/--no-flag` defaulting to
+unset, so e.g. `--no-ai` can disable a config-enabled AI pass. Discovery:
+`--config`/`$PDFX_CONFIG`, then nearest `pdfx.toml` walking up from CWD, then
+`~/.config/pdfx/config.toml` (project merges over user). Secrets stay out — the
+API key is env-only, never read from the file. Config loading lives in the CLI
+layer; `core` stays import-clean. Tests: `tests/test_config.py` (discovery,
+precedence matrix, default action, key-not-from-config).
 
 ## Phase 4 — Quality of life
 

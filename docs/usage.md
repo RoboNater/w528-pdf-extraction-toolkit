@@ -29,6 +29,9 @@ The same functionality is available as a Python library (`pdfx.core`).
 Run via `uv run pdfx ...` from the project directory (or just `pdfx ...` inside an
 activated environment). `pdfx --help` and `pdfx COMMAND --help` show full options.
 
+A [config file](#configuration-file) can supply defaults for any option, and lets
+`pdfx FILE.pdf` (no subcommand) run a prescribed action.
+
 ### `pdfx index` — document overview
 
 ```sh
@@ -269,6 +272,74 @@ label first (what you see in your PDF reader), with the physical position as a
 |---------------|-------------------|---------------------------|----------------------------|
 | with labels   | `page0030_pp0038.png` | `page0030_pp0038_img00_Im1.png` | `table_page0030_pp0038_00.csv` |
 | without labels| `page0038.png`    | `page0038_img00_Im1.png`  | `table_page0038_00.csv`    |
+
+## Configuration file
+
+Any option can be given a persistent default in an optional TOML config file, so
+you don't have to repeat flags or export environment variables. With one in
+place, a bare `pdfx FILE.pdf` — just the PDF path, no subcommand — finds the
+config and runs the action it prescribes.
+
+```toml
+[default]
+command = "markdown"          # what `pdfx FILE.pdf` runs; omit → "index"
+
+[markdown]                    # per-command defaults
+ai = true
+engine = "pypdf"
+outline_headings = true
+
+[text]
+engine = "pypdf"
+layout = true
+
+[vlm]                         # shared VLM settings for --ai / --ocr / validate-vlm-ocr
+model = "gpt-4o-mini"
+base_url = "https://openrouter.ai/api/v1"
+organization = "org-abc123"
+cache_dir = "~/.cache/pdfx"
+# the API key is never read from the config file (see "Secrets" below).
+```
+
+### Precedence
+
+Every option resolves as **flag → environment variable → config file → built-in
+default**. The config sits below flags and the `PDFX_*` env vars, above pdfx's
+built-in defaults. Those env vars are unchanged; the config file is a strictly
+additional, lower-priority layer.
+
+Since flags win, boolean options are **paired** — every `--flag` has a matching
+`--no-flag`, and both default to unset so an omitted flag falls through to the
+config rather than forcing the option off. This is what lets you disable a
+config-enabled feature on the command line:
+
+```sh
+# config sets [markdown] ai = true; run this one file without the AI pass:
+pdfx report.pdf --no-ai
+```
+
+A VLM key placed in a command section (e.g. `[markdown] model`) overrides the
+same key in the shared `[vlm]` section for that command.
+
+### Discovery
+
+The file is located, first match wins:
+
+1. an explicit `--config PATH` (or the `$PDFX_CONFIG` env var);
+2. the nearest `pdfx.toml` walking up from the current directory (project-local);
+3. `~/.config/pdfx/config.toml` (user-level).
+
+When both a project and a user file exist they are merged per key, with the
+project file winning. A missing auto-discovered file is simply ignored; a
+missing `--config`/`$PDFX_CONFIG` file, or a malformed file, reports a clear
+error (not a traceback).
+
+### Secrets
+
+The config file supports every setting **except** the API key. The key stays in
+the environment (`PDFX_VLM_API_KEY`, falling back to `OPENAI_API_KEY`) — reading
+a key from a file on disk is a footgun pdfx deliberately avoids. Passwords for
+encrypted PDFs are likewise flag/`--password`-only and never read from config.
 
 ## Page labels
 

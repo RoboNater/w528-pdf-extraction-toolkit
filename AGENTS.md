@@ -12,6 +12,8 @@ AI (vision-language model) review pass.
   VLM review over any OpenAI-compatible API).
 - `src/pdfx/models.py` — pydantic result models. `src/pdfx/pages.py` — page
   spec parsing. `src/pdfx/cli.py` — Typer wrapper only.
+- `src/pdfx/config.py` — optional TOML config for CLI defaults (CLI-layer only;
+  `core` never imports it). Resolution is **flag → env → config → default**.
 - `tests/` — pytest; all fixture PDFs are generated at run time with reportlab
   in `conftest.py` (never commit binary fixtures).
 - `ROADMAP.md` — the phased plan and the record of what shipped; keep it
@@ -44,6 +46,11 @@ rendering: `apt install poppler-utils`. Tests needing it use the
   don't quietly switch engines.
 - CLI: JSON to stdout by default; errors exit 1 with `{"error": ...}` on
   stdout and a message on stderr; stdout/stderr forced to UTF-8 for Windows.
+- CLI options must stay config-overridable: booleans are paired
+  `--flag/--no-flag` defaulting to `None`, and every option is read through
+  `config.resolve(...)` so the flag → env → config → default order holds. A bare
+  `pdfx FILE` runs the `[default].command` (else `index`). Secrets (API key,
+  `--password`) are never read from the config file.
 - Errors subclass `core.PdfxError` so the CLI's `_errors()` handler catches
   them.
 - A feature is: core/library function returning pydantic models + CLI wrapper
